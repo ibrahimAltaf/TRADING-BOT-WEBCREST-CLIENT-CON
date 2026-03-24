@@ -30,12 +30,14 @@ except Exception:
 
 app = FastAPI(title="AI Trading System - Phase 1")
 
-# Local dev + Vercel preview; append CORS_ORIGINS (comma-separated) for VPS / custom dashboard URLs.
+# Local dev + Vercel preview; VPS HTTP dashboard (port 80) calling API on :8000 is cross-origin — must be listed.
+# Append CORS_ORIGINS (comma-separated) in .env for extra domains (HTTPS, staging, etc.).
 _origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:4173",
     "https://trading-bot-dashboard-delta.vercel.app",
+    "http://147.93.96.42",
 ]
 _extra = os.getenv("CORS_ORIGINS", "").strip()
 if _extra:
