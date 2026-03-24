@@ -31,7 +31,10 @@ npm run dev
 
 ## Production (VPS)
 
-See **`bot new backend/docs/VPS-DEPLOY.md`**. On the server you can rename folders (e.g. `backend` / `web`) to avoid spaces in paths; update systemd `WorkingDirectory` accordingly.
+- General: **`bot new backend/docs/VPS-DEPLOY.md`**
+- Paths under **`/var/www`** (step-by-step): **`bot new backend/docs/VPS-VAR-WWW.md`**
+
+On the server you can rename `bot new backend` → `backend` to avoid spaces in systemd paths.
 
 Set **`CORS_ORIGINS`** in the API `.env` to your dashboard URL. Build the dashboard with **`VITE_API_BASE_URL`** pointing at your public API URL.
 
