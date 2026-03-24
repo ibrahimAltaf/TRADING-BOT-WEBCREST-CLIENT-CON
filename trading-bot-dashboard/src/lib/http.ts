@@ -7,11 +7,11 @@ export type ApiError = {
   data?: unknown;
 };
 
-// Production: same-origin /api/… (nginx proxies to 127.0.0.1:8000) — avoids flaky :8000 from browsers.
-// Dev: call backend directly on localhost:8000.
+// Live VPS API via nginx (/api → backend). Override with VITE_API_BASE_URL in .env when host changes.
+const DEFAULT_API_BASE = "http://147.93.96.42/api";
+
 const API_BASE =
-  import.meta.env.VITE_API_BASE_URL ||
-  (import.meta.env.PROD ? "/api" : "http://localhost:8000");
+  String(import.meta.env.VITE_API_BASE_URL || "").trim() || DEFAULT_API_BASE;
 
 export const http = axios.create({
   baseURL: API_BASE,
