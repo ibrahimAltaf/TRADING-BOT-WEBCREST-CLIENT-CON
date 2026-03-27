@@ -11,6 +11,7 @@ import {
   usePositionsOpenQuery,
   usePerformanceSummaryQuery,
   useCancelOrderMutation,
+  useProofQuery,
 } from "../../apis/exchange/useExchangeQueries";
 import PriceChart from "../../components/charts/PriceChart";
 import OrdersTable from "../../components/exchange/OrdersTable";
@@ -53,6 +54,7 @@ export default function ExchangeMonitor() {
   const trades = useTradesQuery({ symbol, limit: 50 });
   const positions = usePositionsOpenQuery();
   const performanceSummary = usePerformanceSummaryQuery("live");
+  const proof = useProofQuery(symbol);
 
   const price = ticker.data?.price;
   const balanceList = (balances.data?.balances ?? [])
@@ -185,6 +187,38 @@ export default function ExchangeMonitor() {
               "—"
             )
           }
+        />
+      </div>
+
+      {/* ── Audit proof strip ── */}
+      <div className="grid grid-cols-2 gap-px sm:grid-cols-4 rounded-xl border border-slate-200 bg-slate-100 shadow-sm overflow-hidden">
+        <PerfStat
+          label="Mode"
+          loading={proof.isLoading}
+          value={
+            proof.data?.environment?.binance_testnet
+              ? "Paper/Testnet"
+              : "Live/Mainnet"
+          }
+        />
+        <PerfStat
+          label="USDT Balance"
+          loading={proof.isLoading}
+          value={
+            proof.data?.balances?.usdt
+              ? fmtNum(Number(proof.data.balances.usdt.total ?? 0), 2)
+              : "—"
+          }
+        />
+        <PerfStat
+          label="Open Orders"
+          loading={proof.isLoading}
+          value={proof.data?.orders?.open_count ?? "—"}
+        />
+        <PerfStat
+          label="Closed PnL (USDT)"
+          loading={proof.isLoading}
+          value={fmtNum(proof.data?.performance?.realized_pnl_usdt, 2)}
         />
       </div>
 

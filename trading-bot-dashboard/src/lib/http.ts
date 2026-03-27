@@ -7,11 +7,20 @@ export type ApiError = {
   data?: unknown;
 };
 
-// Live VPS API via nginx (/api → backend). Override with VITE_API_BASE_URL in .env when host changes.
+// Live VPS API via nginx (:80 /api → backend). Never call :8000 from the browser.
 const DEFAULT_API_BASE = "http://147.93.96.42/api";
 
-const API_BASE =
-  String(import.meta.env.VITE_API_BASE_URL || "").trim() || DEFAULT_API_BASE;
+/** Old builds baked `http://host:8000` — rewrite to same host `/api` so nginx proxy works. */
+function normalizeApiBase(raw: string): string {
+  const s = raw.trim() || DEFAULT_API_BASE;
+  if (!s.includes(":8000")) return s;
+  const withoutPort = s.replace(/:8000\/?$/, "").replace(/\/$/, "");
+  return `${withoutPort}/api`;
+}
+
+const API_BASE = normalizeApiBase(
+  String(import.meta.env.VITE_API_BASE_URL || "").trim() || DEFAULT_API_BASE,
+);
 
 export const http = axios.create({
   baseURL: API_BASE,

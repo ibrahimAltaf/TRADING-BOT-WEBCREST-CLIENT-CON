@@ -136,7 +136,58 @@ export type ExchangeTrade = {
 
 export type ExchangeTradesResponse = {
   ok?: boolean;
+  count?: number;
   trades: ExchangeTrade[];
+};
+
+export type ExchangeProofResponse = {
+  ok: boolean;
+  symbol: string;
+  environment: {
+    binance_testnet: boolean;
+    binance_spot_base_url: string;
+    app_env: string;
+  };
+  balances: {
+    count: number;
+    usdt?: ExchangeBalanceItem;
+    all: ExchangeBalanceItem[];
+  };
+  decision_visibility: {
+    latest?: TradingDecision | null;
+    recent_count: number;
+    recent: TradingDecision[];
+    action_counts: {
+      total: number;
+      buy: number;
+      sell: number;
+      hold: number;
+    };
+  };
+  positions: {
+    open_count: number;
+    open: Position[];
+    history_count: number;
+    history: Position[];
+  };
+  orders: {
+    open_count: number;
+    open: ExchangeOrder[];
+  };
+  trades: {
+    count: number;
+    recent: ExchangeTrade[];
+    last_trade_ts: string | null;
+  };
+  performance: {
+    realized_pnl_usdt: number;
+    closed_positions_count: number;
+  };
+  logs: {
+    recent_count: number;
+    recent: EventLog[];
+    last_event_ts: string | null;
+  };
 };
 
 export type SystemStatusResponse = {
@@ -516,6 +567,14 @@ export const exchangeApi = {
     signal?: AbortSignal,
   ) => {
     const r = await http.get<ExchangeTradesResponse>("/exchange/trades", {
+      params,
+      signal,
+    });
+    return r.data;
+  },
+
+  proof: async (params?: { symbol?: string }, signal?: AbortSignal) => {
+    const r = await http.get<ExchangeProofResponse>("/exchange/proof", {
       params,
       signal,
     });

@@ -1,8 +1,9 @@
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   useStartupCheck,
   useStatusSummary,
 } from "../../apis/api-summary/useStatusSummary";
+import { http, toApiError } from "../../lib/http";
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -64,10 +65,103 @@ function InfoCard({
 export default function StatusSummary() {
   const summary = useStatusSummary();
   const startup = useStartupCheck();
+  const [checklist, setChecklist] = useState<
+    Array<{
+      endpoint: string;
+      ok: boolean;
+      detail: string;
+    }>
+  >([]);
+  const [checking, setChecking] = useState(false);
+
+  const runChecklist = useCallback(async () => {
+    setChecking(true);
+    const endpoints = [
+      "/status",
+      "/status/summary",
+      "/status/startup-check",
+      "/exchange/decisions/latest?symbol=BTCUSDT",
+      "/exchange/decisions/recent?symbol=BTCUSDT&limit=20",
+      "/exchange/balances",
+      "/exchange/positions/open",
+      "/exchange/positions/history?symbol=BTCUSDT&limit=20",
+      "/exchange/orders/open?symbol=BTCUSDT",
+      "/exchange/logs/recent?limit=50",
+      "/exchange/proof?symbol=BTCUSDT",
+    ] as const;
+
+    const results = await Promise.all(
+      endpoints.map(async (endpoint) => {
+        try {
+          const res = await http.get(endpoint);
+          const data = res?.data ?? {};
+          const detail =
+            typeof data?.count === "number"
+              ? `count=${data.count}`
+              : typeof data?.ok === "boolean"
+                ? `ok=${String(data.ok)}`
+                : `http=${res.status}`;
+          return { endpoint, ok: true, detail };
+        } catch (e) {
+          const err = toApiError(e);
+          return {
+            endpoint,
+            ok: false,
+            detail: err.status ? `${err.status}: ${err.message}` : err.message,
+          };
+        }
+      }),
+    );
+
+    setChecklist(results);
+    setChecking(false);
+  }, []);
+
+  const exportChecklistCsv = useCallback(() => {
+    if (!checklist.length) return;
+    const header = ["Endpoint", "Status", "Detail"];
+    const rows = checklist.map((r) => [
+      `/api${r.endpoint}`,
+      r.ok ? "OK" : "FAILED",
+      r.detail.replaceAll('"', '""'),
+    ]);
+    const csv = [header, ...rows]
+      .map((cols) => cols.map((c) => `"${String(c)}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `validation-checklist-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [checklist]);
+
+  const copyAuditReport = useCallback(async () => {
+    if (!checklist.length) return;
+    const okCount = checklist.filter((x) => x.ok).length;
+    const failCount = checklist.length - okCount;
+    const lines = [
+      "Technical Review Update",
+      "",
+      `Checklist results: ${okCount}/${checklist.length} endpoints OK, ${failCount} failed.`,
+      "",
+      ...checklist.map(
+        (r) =>
+          `- /api${r.endpoint} | ${r.ok ? "OK" : "FAILED"} | ${r.detail || "-"}`,
+      ),
+      "",
+      "This report was generated from the deployed dashboard validation checklist.",
+    ];
+    await navigator.clipboard.writeText(lines.join("\n"));
+  }, [checklist]);
 
   useEffect(() => {
     summary.run();
     startup.run();
+    runChecklist();
   }, []);
 
   const data = useMemo(() => summary.data, [summary.data]);
@@ -94,10 +188,13 @@ export default function StatusSummary() {
               onClick={() => {
                 summary.run();
                 startup.run();
+                runChecklist();
               }}
               className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 disabled:opacity-60"
             >
-              {summary.loading || startup.loading ? "Refreshing..." : "Refresh"}
+              {summary.loading || startup.loading || checking
+                ? "Refreshing..."
+                : "Refresh"}
             </button>
           </div>
         </div>
@@ -129,6 +226,23 @@ export default function StatusSummary() {
             />
 
             <InfoCard label="Environment" value={startupData?.env || "—"} mono />
+
+            <InfoCard
+              label="Testnet Mode"
+              value={
+                <span
+                  className={statusBadge(Boolean(startupData?.binance_testnet))}
+                >
+                  {startupData?.binance_testnet ? "Enabled" : "Disabled"}
+                </span>
+              }
+            />
+
+            <InfoCard
+              label="Exchange Base URL"
+              value={startupData?.binance_spot_base_url || data.binance_spot_base_url || "—"}
+              mono
+            />
 
             <InfoCard
               label="Scheduler State"
@@ -204,6 +318,20 @@ export default function StatusSummary() {
             />
 
             <InfoCard
+              label="Latest Decision"
+              value={
+                data.latest_decision
+                  ? `${data.latest_decision.action} · ${data.latest_decision.symbol} (${data.latest_decision.timeframe})`
+                  : "—"
+              }
+            />
+
+            <InfoCard
+              label="Decision Reason"
+              value={data.latest_decision?.reason || "—"}
+            />
+
+            <InfoCard
               label="Last Successful Market Fetch"
               value={formatDateTime(data.last_successful_market_fetch)}
             />
@@ -211,6 +339,11 @@ export default function StatusSummary() {
             <InfoCard
               label="Last Successful Trade Execution"
               value={formatDateTime(data.last_successful_trade_execution)}
+            />
+
+            <InfoCard
+              label="Recent Activity (100)"
+              value={`Decisions: ${data.observability?.recent_decisions_count ?? 0} · Trades: ${data.observability?.recent_trades_count ?? 0}`}
             />
           </div>
         )}
@@ -220,6 +353,75 @@ export default function StatusSummary() {
             No status summary available.
           </div>
         )}
+
+        <div className="mt-6">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-slate-900">
+              Client Validation Checklist
+            </h3>
+            <div className="flex items-center gap-2">
+              {checking && (
+                <span className="text-xs text-slate-500">Checking...</span>
+              )}
+              <button
+                type="button"
+                onClick={exportChecklistCsv}
+                disabled={!checklist.length}
+                className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 disabled:opacity-50"
+              >
+                Export CSV
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  copyAuditReport().catch(() => undefined);
+                }}
+                disabled={!checklist.length}
+                className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 disabled:opacity-50"
+              >
+                Copy Audit Report
+              </button>
+            </div>
+          </div>
+          <div className="overflow-hidden rounded-xl border border-slate-200">
+            <table className="min-w-full bg-white text-sm">
+              <thead className="bg-slate-50 text-slate-600">
+                <tr>
+                  <th className="px-3 py-2 text-left font-semibold">Endpoint</th>
+                  <th className="px-3 py-2 text-left font-semibold">Status</th>
+                  <th className="px-3 py-2 text-left font-semibold">Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {checklist.map((row) => (
+                  <tr key={row.endpoint} className="border-t border-slate-100">
+                    <td className="px-3 py-2 font-mono text-xs text-slate-700">
+                      /api{row.endpoint}
+                    </td>
+                    <td className="px-3 py-2">
+                      <span className={statusBadge(row.ok)}>
+                        {row.ok ? "OK" : "FAILED"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-slate-600">
+                      {row.detail}
+                    </td>
+                  </tr>
+                ))}
+                {!checklist.length && !checking && (
+                  <tr>
+                    <td
+                      className="px-3 py-5 text-center text-slate-500"
+                      colSpan={3}
+                    >
+                      No checklist results yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   );

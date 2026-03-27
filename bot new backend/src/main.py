@@ -104,6 +104,9 @@ def status():
         "phase": 1,
         "env": s.app_env,
         "binance_testnet": s.binance_testnet,
+        "binance_spot_base_url": s.binance_spot_base_url,
+        "trade_symbol": s.trade_symbol,
+        "trade_timeframe": s.trade_timeframe,
     }
 
 

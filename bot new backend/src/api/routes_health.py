@@ -54,6 +54,23 @@ def status_summary() -> Dict[str, Any]:
             db.query(TradingDecisionLog).order_by(TradingDecisionLog.ts.desc()).first()
         )
         last_decision_ts = last_decision.ts.isoformat() if last_decision else None
+        latest_decision = (
+            {
+                "action": last_decision.action,
+                "confidence": (
+                    round(last_decision.confidence, 3)
+                    if last_decision.confidence is not None
+                    else None
+                ),
+                "reason": last_decision.reason,
+                "symbol": last_decision.symbol,
+                "timeframe": last_decision.timeframe,
+                "executed": bool(last_decision.executed),
+                "order_id": last_decision.order_id,
+            }
+            if last_decision
+            else None
+        )
 
         # last successful market fetch: look for EventLog entries that likely indicate fetch/exchange activity
         candidates = ["exchange", "scheduler", "market", "fetch", "klines", "ticker"]
@@ -75,6 +92,18 @@ def status_summary() -> Dict[str, Any]:
         # last successful trade execution: look at latest Trade.ts
         last_trade = db.query(Trade).order_by(Trade.ts.desc()).first()
         last_trade_ts = last_trade.ts.isoformat() if last_trade else None
+
+        # lightweight activity counters for observability reports
+        recent_decisions_count = (
+            db.query(TradingDecisionLog)
+            .filter(TradingDecisionLog.ts.isnot(None))
+            .order_by(TradingDecisionLog.ts.desc())
+            .limit(100)
+            .count()
+        )
+        recent_trades_count = (
+            db.query(Trade).order_by(Trade.ts.desc()).limit(100).count()
+        )
 
         # model loaded: check ml.inference singleton without importing heavy TF
         model_loaded = False
@@ -115,8 +144,12 @@ def status_summary() -> Dict[str, Any]:
 
         return {
             "app_version": app_version,
+            "env": s.app_env,
+            "binance_testnet": bool(s.binance_testnet),
+            "binance_spot_base_url": s.binance_spot_base_url,
             "scheduler_state": scheduler_state,
             "last_decision_time": last_decision_ts,
+            "latest_decision": latest_decision,
             "last_successful_market_fetch": last_market_fetch_ts,
             "last_successful_trade_execution": last_trade_ts,
             "model_loaded": model_loaded,
@@ -124,6 +157,10 @@ def status_summary() -> Dict[str, Any]:
             "exchange_connected": exchange_ok,
             "exchange_detail": exchange_detail
             or ("ok" if exchange_ok else "unavailable"),
+            "observability": {
+                "recent_decisions_count": recent_decisions_count,
+                "recent_trades_count": recent_trades_count,
+            },
         }
     finally:
         db.close()
@@ -170,6 +207,8 @@ def startup_check() -> Dict[str, Any]:
     return {
         "ok": True,
         "env": s.app_env,
+        "binance_testnet": bool(s.binance_testnet),
+        "binance_spot_base_url": s.binance_spot_base_url,
         "app_version": summary.get("app_version"),
         "scheduler_state": summary.get("scheduler_state"),
         "database_connected": summary.get("database_connected"),
@@ -182,4 +221,6 @@ def startup_check() -> Dict[str, Any]:
         "last_successful_trade_execution": summary.get(
             "last_successful_trade_execution"
         ),
+        "latest_decision": summary.get("latest_decision"),
+        "observability": summary.get("observability"),
     }

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Set
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
+from sqlalchemy import func, case
 
 from src.core.config import get_settings
 from src.exchange.binance_spot_client import BinanceSpotClient
@@ -743,17 +744,43 @@ def get_open_positions(db: Session = Depends(get_db)):
         .all()
     )
 
+    client = BinanceSpotClient()
+    prices: Dict[str, float] = {}
+
+    def px(symbol: str) -> float:
+        s = (symbol or "").upper().strip()
+        if s in prices:
+            return prices[s]
+        try:
+            prices[s] = float(client.get_price(s))
+        except Exception:
+            prices[s] = 0.0
+        return prices[s]
+
     return {
         "ok": True,
         "count": len(positions),
         "positions": [
             {
                 "id": p.id,
+                "mode": p.mode,
                 "symbol": p.symbol,
                 "entry_price": p.entry_price,
                 "entry_qty": p.entry_qty,
                 "entry_ts": p.entry_ts.isoformat() if p.entry_ts else None,
-                "unrealized_pnl": "Calculate with current price",
+                "current_price": px(p.symbol),
+                "unrealized_pnl": (
+                    (px(p.symbol) - float(p.entry_price or 0)) * float(p.entry_qty or 0)
+                ),
+                "unrealized_pnl_pct": (
+                    (
+                        ((px(p.symbol) - float(p.entry_price or 0))
+                        / float(p.entry_price or 1))
+                        * 100.0
+                    )
+                    if float(p.entry_price or 0) > 0
+                    else 0.0
+                ),
             }
             for p in positions
         ],
@@ -1066,4 +1093,130 @@ def debug_exchange():
         "api_secret_present": bool(s.binance_api_secret),
         "ml_enabled": s.ml_enabled,
         "ml_model_dir": s.ml_model_dir if s.ml_enabled else None,
+    }
+
+
+@router.get("/proof")
+def exchange_proof(symbol: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Unified verification snapshot for audit/monitoring.
+    Includes decisions, balances, pnl, orders, positions, and recent logs.
+    """
+    from src.db.models import Position, Trade, EventLog, TradingDecisionLog
+
+    s = get_settings()
+    selected_symbol = (symbol or s.trade_symbol or "BTCUSDT").upper().strip()
+
+    # Reuse existing route handlers to keep schemas aligned.
+    balances_res = get_balances()
+    recent_decisions_res = get_recent_decisions(
+        symbol=selected_symbol,
+        action=None,
+        limit=20,
+        db=db,
+    )
+    latest_decision_res = get_latest_decision(symbol=selected_symbol, db=db)
+    open_positions_res = get_open_positions(db=db)
+    positions_history_res = get_position_history(symbol=selected_symbol, limit=20, db=db)
+    open_orders_res = get_open_orders(symbol=selected_symbol)
+    trades_res = get_my_trades(symbol=selected_symbol, limit=50)
+    recent_logs_res = get_recent_logs(limit=50, db=db)
+
+    usdt_balance = next(
+        (
+            b
+            for b in (balances_res.get("balances", []) or [])
+            if str(b.get("asset", "")).upper() == "USDT"
+        ),
+        None,
+    )
+
+    closed_positions = (
+        db.query(Position)
+        .filter(
+            Position.mode == "live",
+            Position.is_open == False,  # noqa: E712
+            Position.symbol == selected_symbol,
+        )
+        .order_by(Position.exit_ts.desc())
+        .limit(200)
+        .all()
+    )
+    pnl_usdt = float(sum(float(p.pnl or 0) for p in closed_positions))
+
+    decision_counts_row = (
+        db.query(
+            func.count(TradingDecisionLog.id).label("total"),
+            func.sum(case((TradingDecisionLog.action == "BUY", 1), else_=0)).label(
+                "buy"
+            ),
+            func.sum(case((TradingDecisionLog.action == "SELL", 1), else_=0)).label(
+                "sell"
+            ),
+            func.sum(case((TradingDecisionLog.action == "HOLD", 1), else_=0)).label(
+                "hold"
+            ),
+        )
+        .filter(TradingDecisionLog.symbol == selected_symbol)
+        .first()
+    )
+
+    last_trade = (
+        db.query(Trade)
+        .filter(Trade.mode == "live", Trade.symbol == selected_symbol)
+        .order_by(Trade.ts.desc())
+        .first()
+    )
+    last_event = db.query(EventLog).order_by(EventLog.ts.desc()).first()
+
+    return {
+        "ok": True,
+        "symbol": selected_symbol,
+        "environment": {
+            "binance_testnet": bool(s.binance_testnet),
+            "binance_spot_base_url": s.binance_spot_base_url,
+            "app_env": s.app_env,
+        },
+        "balances": {
+            "count": int(balances_res.get("count", 0)),
+            "usdt": usdt_balance,
+            "all": balances_res.get("balances", []),
+        },
+        "decision_visibility": {
+            "latest": latest_decision_res.get("decision")
+            if latest_decision_res.get("ok")
+            else None,
+            "recent_count": int(recent_decisions_res.get("count", 0)),
+            "recent": recent_decisions_res.get("decisions", []),
+            "action_counts": {
+                "total": int(getattr(decision_counts_row, "total", 0) or 0),
+                "buy": int(getattr(decision_counts_row, "buy", 0) or 0),
+                "sell": int(getattr(decision_counts_row, "sell", 0) or 0),
+                "hold": int(getattr(decision_counts_row, "hold", 0) or 0),
+            },
+        },
+        "positions": {
+            "open_count": int(open_positions_res.get("count", 0)),
+            "open": open_positions_res.get("positions", []),
+            "history_count": int(positions_history_res.get("count", 0)),
+            "history": positions_history_res.get("positions", []),
+        },
+        "orders": {
+            "open_count": int(open_orders_res.get("count", 0)),
+            "open": open_orders_res.get("orders", []),
+        },
+        "trades": {
+            "count": int(trades_res.get("count", 0)),
+            "recent": trades_res.get("trades", []),
+            "last_trade_ts": last_trade.ts.isoformat() if last_trade and last_trade.ts else None,
+        },
+        "performance": {
+            "realized_pnl_usdt": pnl_usdt,
+            "closed_positions_count": len(closed_positions),
+        },
+        "logs": {
+            "recent_count": int(recent_logs_res.get("count", 0)),
+            "recent": recent_logs_res.get("logs", []),
+            "last_event_ts": last_event.ts.isoformat() if last_event and last_event.ts else None,
+        },
     }

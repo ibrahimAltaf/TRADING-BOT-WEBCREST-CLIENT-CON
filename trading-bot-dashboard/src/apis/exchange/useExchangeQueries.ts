@@ -16,6 +16,7 @@ import {
   type ExchangeDecisionsRecentResponse,
   type ExchangeDecisionLatestResponse,
   type ExchangeLogsRecentResponse,
+  type ExchangeProofResponse,
   type ExchangeOpenPositionsResponse,
   type ExchangePositionsHistoryResponse,
   type ExchangeTradesResponse,
@@ -61,6 +62,7 @@ const keys = {
     [...keys.all, "mlVsRules", mode ?? "live"] as const,
   tradeEvaluation: (mode?: string) =>
     [...keys.all, "tradeEvaluation", mode ?? "live"] as const,
+  proof: (symbol?: string) => [...keys.all, "proof", symbol ?? "BTCUSDT"] as const,
 };
 
 export function useStatusQuery(
@@ -222,6 +224,19 @@ export function useTradesQuery(
   return useQuery({
     queryKey: keys.trades(params),
     queryFn: () => exchangeApi.trades(params),
+    refetchInterval: 15_000,
+    ...options,
+  });
+}
+
+export function useProofQuery(
+  symbol: string,
+  options?: UseQueryOptions<unknown, Error, ExchangeProofResponse>,
+) {
+  return useQuery({
+    queryKey: keys.proof(symbol),
+    queryFn: () => exchangeApi.proof({ symbol }),
+    enabled: !!symbol,
     refetchInterval: 15_000,
     ...options,
   });
