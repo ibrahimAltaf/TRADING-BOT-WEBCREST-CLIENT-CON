@@ -9,6 +9,7 @@ from src.risk.rules import RiskConfig
 from src.live.auto_trade_engine import AutoTradeEngine
 from src.live.portfolio import capture_portfolio_snapshot
 from src.db.session import SessionLocal
+from src.core.config import get_settings
 
 scheduler = BackgroundScheduler(timezone="UTC")
 client = BinanceSpotClient()
@@ -16,9 +17,6 @@ client = BinanceSpotClient()
 # Prevent overlapping runs: if previous job still running, skip this cycle instead of
 # letting APScheduler log "maximum number of running instances reached".
 _job_lock = threading.Lock()
-
-SYMBOL = "BTCUSDT"
-TIMEFRAME = "1h"
 
 # Interval in minutes (env SCHEDULER_INTERVAL_MINUTES, default 5). Increase to 10–15
 # if each cycle often takes longer than the interval.
@@ -70,9 +68,13 @@ def live_job():
 
 
 def _run_live_job():
-    """Inner live job: holds _job_lock already."""
+    """Inner live job: holds _job_lock already — one independent cycle per symbol."""
     db = SessionLocal()
     try:
+        settings = get_settings()
+        symbols = list(settings.supported_trading_symbols)
+        timeframe = settings.trade_timeframe
+
         risk = RiskConfig(
             max_position_pct=0.1,
             stop_loss_pct=0.02,
@@ -82,34 +84,34 @@ def _run_live_job():
 
         engine = AutoTradeEngine(db=db, client=client, risk_config=risk)
 
-        # Get balances before
         b1 = client.balances_map()
         usdt_before = float(b1.get("USDT", "0"))
-        btc_before = float(b1.get("BTC", "0"))
 
-        # ✅ Execute trade with full database logging
-        result = engine.execute_auto_trade(
-            symbol=SYMBOL,
-            timeframe=TIMEFRAME,
-            risk_pct=risk.max_position_pct,
-        )
+        any_executed = False
+        for symbol in symbols:
+            result = engine.execute_auto_trade(
+                symbol=symbol,
+                timeframe=timeframe,
+                risk_pct=risk.max_position_pct,
+            )
+            ts = datetime.utcnow()
+            if result.executed:
+                any_executed = True
+                print(
+                    f"[SCHEDULER][{ts}] {symbol} orderId={result.order_id} "
+                    f"status={result.exchange_status} price={result.price:.4f}"
+                )
+            else:
+                print(
+                    f"[SCHEDULER][{ts}] {symbol} signal={result.signal} "
+                    f"reason={result.reason}"
+                )
 
-        # Get balances after
         b2 = client.balances_map()
         usdt_after = float(b2.get("USDT", "0"))
-        btc_after = float(b2.get("BTC", "0"))
-
-        if result.executed:
+        if any_executed:
             print(
-                f"[SCHEDULER][{datetime.utcnow()}] "
-                f"orderId={result.order_id} status={result.exchange_status} "
-                f"USDT {usdt_before:.2f}->{usdt_after:.2f} BTC {btc_before:.6f}->{btc_after:.6f} "
-                f"price={result.price:.2f} spend={result.balance_before - result.balance_after if result.balance_before and result.balance_after else 'N/A'}"
-            )
-        else:
-            print(
-                f"[SCHEDULER][{datetime.utcnow()}] "
-                f"signal={result.signal} reason={result.reason}"
+                f"[SCHEDULER][{datetime.utcnow()}] portfolio USDT {usdt_before:.2f}->{usdt_after:.2f}"
             )
 
         try:

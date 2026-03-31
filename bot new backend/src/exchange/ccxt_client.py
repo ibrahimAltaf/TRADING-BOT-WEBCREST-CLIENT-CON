@@ -25,6 +25,12 @@ def get_ccxt_client_for_user(user_id: int) -> Optional[Any]:
         config = db.query(ExchangeConfig).filter(ExchangeConfig.user_id == user_id).first()
         if not config or not config.api_key or not config.api_secret:
             return None
+        from src.core.config import get_settings as _gs
+        from src.core.secrets_crypto import decrypt_optional
+
+        secret = decrypt_optional(
+            config.api_secret, _gs().secrets_encryption_key
+        )
         exchange_id = (config.exchange_id or "binance").strip().lower()
         if exchange_id not in ccxt.exchanges:
             exchange_id = "binance"
@@ -37,7 +43,7 @@ def get_ccxt_client_for_user(user_id: int) -> Optional[Any]:
         client = klass(
             {
                 "apiKey": config.api_key,
-                "secret": config.api_secret,
+                "secret": secret,
                 "enableRateLimit": True,
                 "options": options,
             }

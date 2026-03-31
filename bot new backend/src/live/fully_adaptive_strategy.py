@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -206,12 +207,24 @@ class FullyAdaptiveStrategy:
         latest = df2.iloc[-1]
 
         price = float(latest.get("close"))
+        if not math.isfinite(price) or price <= 0:
+            price = 1.0
         adx = float(latest.get("adx", 0.0))
+        if not math.isfinite(adx):
+            adx = 0.0
         # FIX: column names use actual period numbers, not 'rsi'/'ema_fast'/'ema_slow'
         rsi = float(latest.get(f"rsi_{p.rsi_len}", latest.get("rsi_14", 50.0)))
+        if not math.isfinite(rsi):
+            rsi = 50.0
         ema_fast = float(latest.get(f"ema_{p.ema_fast}", latest.get("ema_20", price)))
         ema_slow = float(latest.get(f"ema_{p.ema_slow}", latest.get("ema_50", price)))
+        if not math.isfinite(ema_fast):
+            ema_fast = price
+        if not math.isfinite(ema_slow):
+            ema_slow = price
         atr = float(latest.get("atr", 0.0))
+        if not math.isfinite(atr):
+            atr = 0.0
         bb_upper = latest.get("bb_upper")
         bb_middle = latest.get("bb_middle")
         bb_lower = latest.get("bb_lower")
@@ -226,6 +239,23 @@ class FullyAdaptiveStrategy:
         action = SignalAction.HOLD
         confidence = 0.5
         reason = "No clear signal"
+
+        def _dynamic_hold_confidence() -> float:
+            """Avoid flat 0.50 on every HOLD — varies with RSI / regime / vol (audit-friendly)."""
+            try:
+                if regime == MarketRegime.TRENDING:
+                    mid = (p.rsi_buy_min + p.rsi_buy_max) / 2.0
+                    span = max(1.0, (p.rsi_buy_max - p.rsi_buy_min) / 2.0)
+                    dist = abs(rsi - mid) / span
+                    base = 0.78 - min(0.38, dist * 0.12)
+                else:
+                    dist = abs(rsi - 50.0) / 50.0
+                    base = 0.42 + (1.0 - dist) * 0.32
+                atr_pct = float(meta.get("atr_pct", 1.0))
+                jitter = min(0.09, atr_pct / 25.0)
+                return round(min(0.91, max(0.31, base + jitter)), 4)
+            except Exception:
+                return 0.52
 
         if force_action in ("BUY", "SELL"):
             action = SignalAction.BUY if force_action == "BUY" else SignalAction.SELL
@@ -247,7 +277,7 @@ class FullyAdaptiveStrategy:
                     reason = f"TRENDING SELL (adaptive): EMA{p.ema_fast}<EMA{p.ema_slow}, RSI={rsi:.1f}>=TP({p.rsi_take_profit:.0f})"
                 else:
                     action = SignalAction.HOLD
-                    confidence = 0.50
+                    confidence = _dynamic_hold_confidence()
                     reason = f"HOLD: Waiting (RSI={rsi:.1f}, EMAs={'bullish' if bullish else 'bearish' if bearish else 'flat'})"
             else:
                 # Ranging (mean reversion)
@@ -266,7 +296,7 @@ class FullyAdaptiveStrategy:
                     reason = f"RANGING SELL (adaptive): price near BB_upper ({bb_upper_val:.2f}), RSI={rsi:.1f}>={p.rsi_range_sell:.0f}"
                 else:
                     action = SignalAction.HOLD
-                    confidence = 0.50
+                    confidence = _dynamic_hold_confidence()
                     _bl = f"{bb_lower_val:.2f}" if bb_lower_val is not None else "N/A"
                     reason = f"HOLD: Range wait (RSI={rsi:.1f}, bb_lower={_bl})"
 

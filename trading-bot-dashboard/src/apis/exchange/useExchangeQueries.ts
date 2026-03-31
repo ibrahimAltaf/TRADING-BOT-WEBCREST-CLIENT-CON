@@ -9,6 +9,11 @@ import {
   type UseMutationOptions,
 } from "@tanstack/react-query";
 import {
+  statsApi,
+  type LiveProofResponse,
+  type MlAnalysisResponse,
+} from "../api-summary/summary.api";
+import {
   exchangeApi,
   type AutoTradeIn,
   type AutoTradeResponse,
@@ -63,6 +68,15 @@ const keys = {
   tradeEvaluation: (mode?: string) =>
     [...keys.all, "tradeEvaluation", mode ?? "live"] as const,
   proof: (symbol?: string) => [...keys.all, "proof", symbol ?? "BTCUSDT"] as const,
+};
+
+const statsRoot = ["stats"] as const;
+const statsKeys = {
+  all: statsRoot,
+  liveProof: (limit: number) =>
+    [...statsRoot, "liveProof", limit] as const,
+  mlAnalysis: (limit: number) =>
+    [...statsRoot, "mlAnalysis", limit] as const,
 };
 
 export function useStatusQuery(
@@ -326,6 +340,30 @@ export function useTradeEvaluationQuery(
     queryKey: keys.tradeEvaluation(mode),
     queryFn: () => exchangeApi.tradeEvaluation({ mode }),
     refetchInterval: 30_000,
+    ...options,
+  });
+}
+
+export function useLiveProofQuery(
+  limit = 200,
+  options?: UseQueryOptions<unknown, Error, LiveProofResponse>,
+) {
+  return useQuery({
+    queryKey: statsKeys.liveProof(limit),
+    queryFn: () => statsApi.liveProof({ limit }),
+    refetchInterval: 30_000,
+    ...options,
+  });
+}
+
+export function useMlAnalysisQuery(
+  limit = 500,
+  options?: UseQueryOptions<unknown, Error, MlAnalysisResponse>,
+) {
+  return useQuery({
+    queryKey: statsKeys.mlAnalysis(limit),
+    queryFn: () => statsApi.mlAnalysis({ limit }),
+    refetchInterval: 60_000,
     ...options,
   });
 }

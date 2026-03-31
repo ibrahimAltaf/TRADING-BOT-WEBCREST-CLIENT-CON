@@ -80,6 +80,8 @@ export default function StatusSummary() {
       "/status",
       "/status/summary",
       "/status/startup-check",
+      "/status/model-health",
+      "/status/runtime-paths",
       "/exchange/decisions/latest?symbol=BTCUSDT",
       "/exchange/decisions/recent?symbol=BTCUSDT&limit=20",
       "/exchange/balances",
@@ -90,28 +92,28 @@ export default function StatusSummary() {
       "/exchange/proof?symbol=BTCUSDT",
     ] as const;
 
-    const results = await Promise.all(
-      endpoints.map(async (endpoint) => {
-        try {
-          const res = await http.get(endpoint);
-          const data = res?.data ?? {};
-          const detail =
-            typeof data?.count === "number"
-              ? `count=${data.count}`
-              : typeof data?.ok === "boolean"
-                ? `ok=${String(data.ok)}`
-                : `http=${res.status}`;
-          return { endpoint, ok: true, detail };
-        } catch (e) {
-          const err = toApiError(e);
-          return {
-            endpoint,
-            ok: false,
-            detail: err.status ? `${err.status}: ${err.message}` : err.message,
-          };
-        }
-      }),
-    );
+    // Sequential checks: avoids nginx/worker stampede during long client audits (100h+).
+    const results: Array<{ endpoint: string; ok: boolean; detail: string }> = [];
+    for (const endpoint of endpoints) {
+      try {
+        const res = await http.get(endpoint);
+        const data = res?.data ?? {};
+        const detail =
+          typeof data?.count === "number"
+            ? `count=${data.count}`
+            : typeof data?.ok === "boolean"
+              ? `ok=${String(data.ok)}`
+              : `http=${res.status}`;
+        results.push({ endpoint, ok: true, detail });
+      } catch (e) {
+        const err = toApiError(e);
+        results.push({
+          endpoint,
+          ok: false,
+          detail: err.status ? `${err.status}: ${err.message}` : err.message,
+        });
+      }
+    }
 
     setChecklist(results);
     setChecking(false);

@@ -1,0 +1,21 @@
+services:
+  trading-api:
+    build: .
+    container_name: trading-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.production
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    command: >
+      uvicorn src.main:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/status')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

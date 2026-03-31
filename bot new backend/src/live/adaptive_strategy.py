@@ -294,6 +294,12 @@ class AdaptiveStrategy:
         else:
             reason = f"HOLD: Waiting for clearer signal (RSI={rsi:.1f}, EMAs={'bullish' if ema_fast > ema_slow else 'bearish'})"
 
+        if action == SignalAction.HOLD:
+            dist = abs(rsi - 50.0) / 50.0
+            confidence = round(
+                0.36 + (1.0 - dist) * 0.30 + min(0.12, atr_pct / 30.0), 4
+            )
+
         # Calculate risk levels
         entry_price = price
         stop_loss, take_profit = self._calculate_risk_levels(entry_price, atr, action)
@@ -405,6 +411,12 @@ class AdaptiveStrategy:
 
         else:
             reason = f"HOLD: Price in middle of range (lower={dist_lower:.1f}%, upper={dist_upper:.1f}%), RSI={rsi:.1f} neutral"
+
+        if action == SignalAction.HOLD:
+            mid = (dist_lower + dist_upper) / 2.0
+            confidence = round(
+                0.40 + max(0.0, 1.0 - min(50.0, mid) / 50.0) * 0.35, 4
+            )
 
         # Calculate risk levels
         entry_price = price

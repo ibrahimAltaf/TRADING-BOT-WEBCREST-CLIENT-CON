@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.ml.features import select_features, FEATURE_COLUMNS
+from src.ml.features import FEATURE_COLUMNS_LEGACY, select_features
 
 _CLASSES = ["SELL", "HOLD", "BUY"]
 
@@ -34,18 +34,22 @@ class LstmInfer:
 
         meta = json.loads((self.model_dir / "meta.json").read_text())
         self.lookback = int(meta["lookback"])
+        self.feature_columns = meta.get("feature_columns")
+        if not self.feature_columns:
+            self.feature_columns = list(FEATURE_COLUMNS_LEGACY)
+        self.n_features = int(meta.get("n_features", len(self.feature_columns)))
 
     def _scale(self, X: np.ndarray) -> np.ndarray:
         return (X - self.mean) / self.scale
 
     def predict_window(self, window_df: pd.DataFrame) -> dict:
-        feats = select_features(window_df)
+        feats = select_features(window_df, self.feature_columns)
         if len(feats) < self.lookback:
             raise ValueError(f"Need {self.lookback} rows, got {len(feats)}")
 
         last = feats.tail(self.lookback).to_numpy(dtype=np.float32)
         last = self._scale(last)
-        X = last.reshape(1, self.lookback, len(FEATURE_COLUMNS))
+        X = last.reshape(1, self.lookback, self.n_features)
 
         probs = self.model.predict(X, verbose=0)[0]  # (3,)
         idx = int(np.argmax(probs))
@@ -68,3 +72,7 @@ def get_infer(model_dir: str) -> LstmInfer:
         infer = LstmInfer(key)
         _cache[key] = infer
     return infer
+
+
+def clear_infer_cache() -> None:
+    _cache.clear()

@@ -3,20 +3,30 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import json
 import os
 
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from src.core.config import get_settings
+from src.core.json_safe import finite_float, sanitize_for_json
 from src.db.models import EventLog, Order, Position, TradingDecisionLog
 from src.exchange.binance_spot_client import BinanceSpotClient
 from src.risk.rules import CooldownState, RiskConfig
 from src.features.indicators import add_all_indicators
+from src.ml.dataset import append_ml_production_features
 from src.live.adaptive_strategy import AdaptiveStrategy, TradingDecision, SignalAction
 from src.live.fully_adaptive_strategy import FullyAdaptiveStrategy
 from src.ml.model_selector import resolve_model_selection
+from src.live.cycle_decision import (
+    build_envelope_from_engine_state,
+    evaluate_entry_gates,
+    fuse_confidence,
+)
+from src.live.gate_stats import record_hold_kind
+from src.ml.runtime_check import feature_columns_valid
 
 
 class SignalType(Enum):
@@ -122,6 +132,16 @@ class AutoTradeEngine:
     # Logging / DB helpers
     # ---------------------------
 
+    def _dump_signals_json(self, signals: Any) -> str:
+        try:
+            payload = sanitize_for_json(signals if isinstance(signals, dict) else {})
+            return json.dumps(payload, allow_nan=False)
+        except Exception as e:
+            return json.dumps(
+                {"error": "signals_serialization_failed", "detail": str(e)[:500]},
+                allow_nan=False,
+            )
+
     def _log_event(
         self,
         level: str,
@@ -183,25 +203,49 @@ class AutoTradeEngine:
 
         decision_log = TradingDecisionLog(
             action=decision.action.value,
-            confidence=decision.confidence,
+            confidence=finite_float(decision.confidence, 0.0),
             symbol=symbol,
             timeframe=timeframe,
             regime=decision.regime.value,
-            price=decision.price,
+            price=finite_float(decision.price, 0.0),
             ts=datetime.utcnow(),
-            adx=decision.adx,
-            ema_fast=decision.ema_fast,
-            ema_slow=decision.ema_slow,
-            rsi=decision.rsi,
-            bb_upper=decision.bb_upper,
-            bb_lower=decision.bb_lower,
-            atr=decision.atr,
-            entry_price=decision.entry_price,
-            stop_loss=decision.stop_loss,
-            take_profit=decision.take_profit,
-            risk_reward=decision.risk_reward,
-            reason=decision.reason,
-            signals_json=json.dumps(decision.signals),
+            adx=finite_float(decision.adx, 0.0),
+            ema_fast=finite_float(decision.ema_fast, 0.0),
+            ema_slow=finite_float(decision.ema_slow, 0.0),
+            rsi=finite_float(decision.rsi, 0.0),
+            bb_upper=(
+                finite_float(decision.bb_upper, 0.0)
+                if decision.bb_upper is not None
+                else None
+            ),
+            bb_lower=(
+                finite_float(decision.bb_lower, 0.0)
+                if decision.bb_lower is not None
+                else None
+            ),
+            atr=finite_float(decision.atr, 0.0),
+            entry_price=(
+                finite_float(decision.entry_price, 0.0)
+                if decision.entry_price is not None
+                else None
+            ),
+            stop_loss=(
+                finite_float(decision.stop_loss, 0.0)
+                if decision.stop_loss is not None
+                else None
+            ),
+            take_profit=(
+                finite_float(decision.take_profit, 0.0)
+                if decision.take_profit is not None
+                else None
+            ),
+            risk_reward=(
+                finite_float(decision.risk_reward, 0.0)
+                if decision.risk_reward is not None
+                else None
+            ),
+            reason=(decision.reason or "")[:20000],
+            signals_json=_dump_signals_json(decision.signals),
             executed=executed,
             order_id=local_order_id,
         )
@@ -213,6 +257,262 @@ class AutoTradeEngine:
             raise
         self.db.refresh(decision_log)
         return decision_log
+
+    def _enrich_cycle_debug(
+        self,
+        decision: TradingDecision,
+        *,
+        rule_confidence_before_ml: float,
+        has_open_position: bool,
+    ) -> None:
+        """Structured audit fields: rule/ml/final confidence, hold kind, block reasons."""
+        sig = decision.signals if isinstance(decision.signals, dict) else {}
+        ml_pred = sig.get("ml_prediction") or {}
+        ml_conf = ml_pred.get("confidence")
+        if ml_conf is not None:
+            try:
+                ml_conf = float(ml_conf)
+            except Exception:
+                ml_conf = None
+        final_src = str(sig.get("final_source", "rule_only"))
+        action = decision.action.value
+
+        block_reasons: List[str] = []
+        hold_kind: Optional[str] = None
+
+        if action == "HOLD":
+            hold_kind = "market_no_trade_signal"
+            ov = sig.get("override_reason")
+            if ov:
+                block_reasons.append(str(ov))
+            block_reasons.append(str(decision.reason or "")[:800])
+            if sig.get("ml_load_error"):
+                block_reasons.append(f"ml_load_error: {sig['ml_load_error']}")
+        elif action == "BUY" and has_open_position:
+            hold_kind = "skipped_buy_position_already_open"
+            block_reasons.append("BUY signal ignored: open position exists for symbol")
+        elif action == "SELL" and not has_open_position:
+            hold_kind = "skipped_sell_no_open_position"
+            block_reasons.append("SELL signal ignored: no open position")
+
+        execution_eligible = (action == "BUY" and not has_open_position) or (
+            action == "SELL" and has_open_position
+        )
+
+        sig["cycle_debug"] = {
+            "rule_confidence": round(finite_float(rule_confidence_before_ml, 0.0), 4),
+            "ml_confidence": round(finite_float(ml_conf, 0.0), 4)
+            if ml_conf is not None
+            else None,
+            "final_confidence": round(finite_float(decision.confidence, 0.0), 4),
+            "final_source": final_src,
+            "hold_kind": hold_kind,
+            "block_reasons": block_reasons,
+            "execution_eligible": execution_eligible,
+            "has_open_position": has_open_position,
+        }
+        decision.signals = sig
+
+    def _patch_cycle_execution_block(self, decision: TradingDecision, reason: str) -> None:
+        if not isinstance(decision.signals, dict):
+            return
+        cd = decision.signals.get("cycle_debug") or {}
+        cd["hold_kind"] = "execution_blocked"
+        cd["execution_block_reason"] = reason
+        decision.signals["cycle_debug"] = cd
+
+    def _attach_cycle_envelope(
+        self,
+        decision: TradingDecision,
+        *,
+        symbol: str,
+        timeframe: str,
+        rule_signal_value: str,
+        rule_confidence_before_ml: float,
+        ml_signal_str: Optional[str],
+        ml_conf: Optional[float],
+        model_loaded: bool,
+        feature_columns_present: bool,
+        final_source: str,
+        open_position: Optional[Position],
+        gate_eval: Dict[str, Any],
+        ml_error: Optional[str],
+        cooldown_blocked: bool,
+    ) -> None:
+        sig = decision.signals if isinstance(decision.signals, dict) else {}
+        cd = sig.get("cycle_debug") or {}
+        exec_eligible = bool(cd.get("execution_eligible")) if cd else False
+        env = build_envelope_from_engine_state(
+            symbol=symbol,
+            timeframe=timeframe,
+            rule_signal=rule_signal_value,
+            rule_confidence=rule_confidence_before_ml,
+            ml_signal=ml_signal_str,
+            ml_confidence=ml_conf,
+            model_loaded=model_loaded,
+            feature_columns_present=feature_columns_present,
+            final_action=decision.action.value,
+            final_confidence=float(decision.confidence),
+            final_source=final_source,
+            execution_eligible=exec_eligible,
+            gate_eval=gate_eval,
+            ml_error=ml_error
+            or sig.get("ml_load_error")
+            or sig.get("ml_prediction_error"),
+            ml_enabled=self.ml_enabled,
+            cooldown_blocked=cooldown_blocked,
+            execution_block_reason=cd.get("execution_block_reason"),
+        )
+        sig["cycle_envelope"] = env.to_dict()
+        decision.signals = sig
+        if env.final_signal == "HOLD" and env.hold_kind and env.hold_kind != "NONE":
+            record_hold_kind(env.hold_kind)
+
+    def _ml_strict_abort_trading_cycle(
+        self,
+        *,
+        decision: TradingDecision,
+        symbol: str,
+        timeframe: str,
+        rule_signal_value: str,
+        rule_confidence_before_ml: float,
+        current_price: float,
+        df: Any,
+        err: str,
+        model_loaded: bool,
+        ml_context: Dict[str, Any],
+    ) -> TradeResult:
+        """ML_STRICT: no silent rule-only path when ML pipeline is required."""
+        decision.action = SignalAction.HOLD
+        decision.reason = f"ML_STRICT: {err}"
+        decision.signals["final_source"] = "ml_strict_failure"
+        self._apply_ml_audit_fields(
+            decision,
+            ml_context=ml_context,
+            ml_out=None,
+            ml_infer_present=model_loaded,
+            rule_signal_value=rule_signal_value,
+        )
+        open_position = self._get_open_position(symbol)
+        gate_eval = evaluate_entry_gates(
+            adx=float(decision.adx),
+            rsi=float(decision.rsi),
+            atr_pct=float(decision.atr_pct),
+            ema_fast=float(decision.ema_fast),
+            ema_slow=float(decision.ema_slow),
+            adx_threshold=float(self.settings.adx_threshold),
+            atr_vol_threshold=float(self.settings.atr_vol_threshold),
+            rsi_buy_min=float(self.settings.rsi_buy_min),
+            rsi_buy_max=float(self.settings.rsi_buy_max),
+            ml_ok=False,
+            risk_ok=True,
+        )
+        self._enrich_cycle_debug(
+            decision,
+            rule_confidence_before_ml=rule_confidence_before_ml,
+            has_open_position=open_position is not None,
+        )
+        self._attach_cycle_envelope(
+            decision,
+            symbol=symbol,
+            timeframe=timeframe,
+            rule_signal_value=rule_signal_value,
+            rule_confidence_before_ml=rule_confidence_before_ml,
+            ml_signal_str=decision.signals.get("ml_signal"),
+            ml_conf=decision.signals.get("ml_confidence"),
+            model_loaded=model_loaded,
+            feature_columns_present=feature_columns_valid(df),
+            final_source="ml_strict_failure",
+            open_position=open_position,
+            gate_eval=gate_eval,
+            ml_error=err,
+            cooldown_blocked=False,
+        )
+        self._save_decision(decision, symbol, timeframe, executed=False)
+        self._log_event(
+            "ERROR",
+            "ml",
+            f"ML_STRICT abort: {err} (symbol={symbol} tf={timeframe})",
+            symbol=symbol,
+        )
+        return TradeResult(
+            success=False,
+            executed=False,
+            signal="HOLD",
+            reason=f"ML_STRICT: {err}",
+            price=current_price,
+        )
+
+    def _apply_ml_audit_fields(
+        self,
+        decision: TradingDecision,
+        *,
+        ml_context: Dict[str, Any],
+        ml_out: Optional[TradeSignal],
+        ml_infer_present: bool,
+        rule_signal_value: str,
+    ) -> None:
+        """Always persist ml_signal, ml_confidence, ml_status, final_source for diagnostics."""
+        sig = decision.signals if isinstance(decision.signals, dict) else {}
+        ml_strict = bool(getattr(self.settings, "ml_strict", False))
+        if not self.ml_enabled:
+            sig["ml_signal"] = None
+            sig["ml_confidence"] = None
+            sig["ml_status"] = "ml_disabled"
+            sig["final_source"] = sig.get("final_source", "rule_only_ml_disabled")
+            decision.signals = sig
+            return
+
+        if not ml_context.get("model_exists"):
+            sig["ml_signal"] = None
+            sig["ml_confidence"] = None
+            sig["ml_status"] = "model_not_found"
+            if not ml_strict:
+                self._log_event(
+                    "WARN",
+                    "ml",
+                    "ML_ENABLED but model.keras not found for resolved path — using rules only",
+                    symbol=ml_context.get("symbol"),
+                )
+        elif not ml_infer_present:
+            sig["ml_signal"] = None
+            sig["ml_confidence"] = None
+            sig["ml_status"] = "model_load_failed"
+        elif ml_out is None:
+            sig["ml_signal"] = None
+            sig["ml_confidence"] = None
+            sig["ml_status"] = "inference_failed"
+        else:
+            sig["ml_signal"] = ml_out.signal.value
+            sig["ml_confidence"] = round(float(ml_out.confidence), 4)
+            sig["ml_status"] = "ok"
+            pred = sig.get("ml_prediction") or {}
+            if not pred:
+                ml_meta = ml_out.metadata or {}
+                sig["ml_prediction"] = {
+                    "signal": ml_out.signal.value,
+                    "confidence": round(ml_out.confidence, 3),
+                    "up": round(float(ml_meta.get("up", 0)), 3),
+                    "hold": round(float(ml_meta.get("hold", 0)), 3),
+                    "down": round(float(ml_meta.get("down", 0)), 3),
+                }
+
+        fs = str(sig.get("final_source", "rule_only"))
+        if (
+            self.ml_enabled
+            and ml_out is not None
+            and sig.get("ml_status") == "ok"
+            and fs == "rule_only"
+            and not ml_strict
+        ):
+            self._log_event(
+                "WARN",
+                "ml",
+                f"ML did not change final decision (rules retained): rule={rule_signal_value} "
+                f"vs ml={ml_out.signal.value} @ {ml_out.confidence:.2f}",
+                symbol=ml_context.get("symbol"),
+            )
+        decision.signals = sig
 
     def _get_open_position(self, symbol: str) -> Optional[Position]:
         return (
@@ -368,8 +668,26 @@ class AutoTradeEngine:
         if not ml_signal:
             return rule_signal
 
-        override_th = float(getattr(self.settings, "ml_override_threshold", 0.95))
+        prioritize_th = float(
+            getattr(self.settings, "ml_prioritize_threshold", 0.80)
+        )
+        override_th = float(getattr(self.settings, "ml_override_threshold", 0.70))
         agree_th = float(getattr(self.settings, "ml_agree_threshold", 0.70))
+
+        if ml_signal.confidence >= prioritize_th:
+            self._log_event(
+                "INFO",
+                "signal",
+                f"ML prioritize (high conf): {ml_signal.signal.value} @ {ml_signal.confidence:.2f}",
+            )
+            return TradeSignal(
+                signal=ml_signal.signal,
+                confidence=ml_signal.confidence,
+                price=ml_signal.price,
+                timestamp=ml_signal.timestamp,
+                source="ml_prioritize",
+                metadata=ml_signal.metadata,
+            )
 
         if ml_signal.confidence >= override_th:
             self._log_event(
@@ -402,12 +720,79 @@ class AutoTradeEngine:
                 metadata={"rule": rule_signal.metadata, "ml": ml_signal.metadata},
             )
 
+        abs_floor = float(
+            getattr(self.settings, "ml_absolute_min_confidence", 0.50)
+        )
+        # Directional conflict (BUY vs SELL): let ML win below override threshold but above safety floor
+        if (
+            rule_signal.signal in (SignalType.BUY, SignalType.SELL)
+            and ml_signal.signal in (SignalType.BUY, SignalType.SELL)
+            and rule_signal.signal != ml_signal.signal
+            and abs_floor <= float(ml_signal.confidence) < override_th
+        ):
+            blended = min(
+                0.95,
+                0.35 * float(rule_signal.confidence)
+                + 0.65 * float(ml_signal.confidence),
+            )
+            self._log_event(
+                "INFO",
+                "signal",
+                f"ML moderate influence: {ml_signal.signal.value} @ {ml_signal.confidence:.2f} "
+                f"(rule={rule_signal.signal.value}, blended={blended:.2f})",
+            )
+            return TradeSignal(
+                signal=ml_signal.signal,
+                confidence=blended,
+                price=ml_signal.price,
+                timestamp=ml_signal.timestamp,
+                source="ml_moderate_influence",
+                metadata=ml_signal.metadata,
+            )
+
+        # Stronger AI: rules say HOLD but ML has directional conviction (reduces HOLD-only stagnation)
+        if getattr(self.settings, "ml_hold_breakout_enabled", True):
+            hb_min = float(
+                getattr(self.settings, "ml_hold_breakout_min_confidence", 0.58)
+            )
+            if (
+                rule_signal.signal == SignalType.HOLD
+                and ml_signal.signal in (SignalType.BUY, SignalType.SELL)
+                and float(ml_signal.confidence) >= hb_min
+            ):
+                blended = min(
+                    0.95,
+                    0.4 * float(rule_signal.confidence)
+                    + 0.6 * float(ml_signal.confidence),
+                )
+                self._log_event(
+                    "INFO",
+                    "signal",
+                    f"ML hold-breakout: {ml_signal.signal.value} @ {ml_signal.confidence:.2f} "
+                    f"(rule=HOLD, blended_conf={blended:.2f})",
+                )
+                return TradeSignal(
+                    signal=ml_signal.signal,
+                    confidence=blended,
+                    price=ml_signal.price,
+                    timestamp=ml_signal.timestamp,
+                    source="ml_hold_breakout",
+                    metadata=ml_signal.metadata,
+                )
+
         self._log_event(
             "INFO",
             "signal",
             f"Signal conflict - using rule-based: {rule_signal.signal.value}",
         )
-        return rule_signal
+        return TradeSignal(
+            signal=rule_signal.signal,
+            confidence=rule_signal.confidence,
+            price=rule_signal.price,
+            timestamp=rule_signal.timestamp,
+            source="rule_only",
+            metadata={"ml_conflict": getattr(ml_signal, "metadata", None)},
+        )
 
     # ---------------------------
     # Binance verification helpers
@@ -504,6 +889,8 @@ class AutoTradeEngine:
                 "atr_period": 14,
             }
             df = add_all_indicators(df, indicator_config)
+            df = append_ml_production_features(df)
+            df = df.dropna()
 
             if len(df) < 50:
                 return TradeResult(
@@ -602,6 +989,7 @@ class AutoTradeEngine:
 
             decision: TradingDecision = self.adaptive_strategy.generate_decision(df)
 
+            rule_confidence_before_ml = float(decision.confidence)
             current_price = decision.price
             rule_signal_value: str = (
                 decision.action.value
@@ -618,6 +1006,7 @@ class AutoTradeEngine:
             ml_signal_value: Optional[str] = None  # set if ML runs, for audit log
             ml_context: Dict[str, Any] = self._resolve_ml_context(symbol, timeframe)
             ml_changed_final_action = False
+            ml_out: Optional[TradeSignal] = None
 
             self.ml_infer = None
             if self.ml_enabled:
@@ -633,9 +1022,9 @@ class AutoTradeEngine:
                     self.ml_infer = None
 
             if self.ml_infer:
-                ml_signal = self._generate_ml_signal(df)
-                if ml_signal:
-                    ml_signal_value = ml_signal.signal.value
+                ml_out = self._generate_ml_signal(df)
+                if ml_out:
+                    ml_signal_value = ml_out.signal.value
                     rule_signal = TradeSignal(
                         signal=SignalType[decision.action.value],
                         confidence=decision.confidence,
@@ -643,7 +1032,25 @@ class AutoTradeEngine:
                         timestamp=datetime.utcnow(),
                         source="rule_based",
                     )
-                    final_signal = self._combine_signals(rule_signal, ml_signal)
+                    final_signal = self._combine_signals(rule_signal, ml_out)
+
+                    fused = fuse_confidence(
+                        rule_signal_value,
+                        ml_out.signal.value,
+                        rule_confidence_before_ml,
+                        ml_out.confidence,
+                    )
+                    if final_signal.source in ("ml_override", "ml_prioritize"):
+                        decision.confidence = final_signal.confidence
+                    elif final_signal.source in (
+                        "ml_hold_breakout",
+                        "ml_moderate_influence",
+                    ):
+                        decision.confidence = min(
+                            1.0, max(fused, final_signal.confidence)
+                        )
+                    else:
+                        decision.confidence = fused
 
                     # Log combined result
                     self._log_event(
@@ -651,15 +1058,15 @@ class AutoTradeEngine:
                         "signal",
                         f"[COMBINED] source={final_signal.source} "
                         f"signal={final_signal.signal.value} conf={final_signal.confidence:.2f} "
-                        f"(rule={rule_signal.signal.value}, ml={ml_signal.signal.value} @ {ml_signal.confidence:.2f})",
+                        f"(rule={rule_signal.signal.value}, ml={ml_out.signal.value} @ {ml_out.confidence:.2f})",
                         symbol=symbol,
                     )
 
                     # Enrich signals dict with ML data for full transparency in DB/dashboard
-                    ml_meta = ml_signal.metadata or {}
+                    ml_meta = ml_out.metadata or {}
                     decision.signals["ml_prediction"] = {
-                        "signal": ml_signal.signal.value,
-                        "confidence": round(ml_signal.confidence, 3),
+                        "signal": ml_out.signal.value,
+                        "confidence": round(ml_out.confidence, 3),
                         "up": round(float(ml_meta.get("up", 0)), 3),
                         "hold": round(float(ml_meta.get("hold", 0)), 3),
                         "down": round(float(ml_meta.get("down", 0)), 3),
@@ -671,21 +1078,64 @@ class AutoTradeEngine:
                     if final_signal.signal.value != decision.action.value:
                         ml_changed_final_action = True
                         decision.action = SignalAction[final_signal.signal.value]
-                        decision.confidence = final_signal.confidence
                         decision.reason = (
                             f"[{final_signal.source.upper()}] {decision.reason}"
                         )
-                    else:
-                        # Boost confidence when both agree
-                        decision.confidence = max(
-                            decision.confidence, final_signal.confidence
-                        )
                 else:
+                    decision.signals["ml_prediction_error"] = "inference_failed"
                     decision.signals["final_source"] = "rule_only"
             else:
                 decision.signals["final_source"] = (
                     "rule_only" if self.ml_enabled else "rule_only_ml_disabled"
                 )
+
+            ml_strict = bool(getattr(self.settings, "ml_strict", False))
+            if ml_strict and self.ml_enabled:
+                if not ml_context.get("model_exists"):
+                    decision.signals["ml_load_error"] = (
+                        decision.signals.get("ml_load_error") or "model_not_found"
+                    )
+                    return self._ml_strict_abort_trading_cycle(
+                        decision=decision,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        rule_signal_value=rule_signal_value,
+                        rule_confidence_before_ml=rule_confidence_before_ml,
+                        current_price=current_price,
+                        df=df,
+                        err="model_not_found",
+                        model_loaded=False,
+                        ml_context=ml_context,
+                    )
+                if not self.ml_infer:
+                    err = str(
+                        decision.signals.get("ml_load_error") or "model_load_failed"
+                    )
+                    return self._ml_strict_abort_trading_cycle(
+                        decision=decision,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        rule_signal_value=rule_signal_value,
+                        rule_confidence_before_ml=rule_confidence_before_ml,
+                        current_price=current_price,
+                        df=df,
+                        err=err,
+                        model_loaded=False,
+                        ml_context=ml_context,
+                    )
+                if ml_out is None:
+                    return self._ml_strict_abort_trading_cycle(
+                        decision=decision,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        rule_signal_value=rule_signal_value,
+                        rule_confidence_before_ml=rule_confidence_before_ml,
+                        current_price=current_price,
+                        df=df,
+                        err="inference_failed",
+                        model_loaded=True,
+                        ml_context=ml_context,
+                    )
 
             # -------------------------------------------------------
             # Transparency: always write all five audit fields so the
@@ -704,7 +1154,13 @@ class AutoTradeEngine:
             decision.signals["combined_signal"] = decision.action.value
 
             # override_reason: human-readable explanation of the pipeline outcome
-            if _final_source == "ml_override":
+            if _final_source == "ml_prioritize":
+                decision.signals["override_reason"] = (
+                    f"ML prioritize high confidence (>="
+                    f"{getattr(self.settings, 'ml_prioritize_threshold', 0.8)}): "
+                    f"{_ml_pred.get('confidence', '?')}"
+                )
+            elif _final_source == "ml_override":
                 decision.signals["override_reason"] = (
                     f"ML override (conf={_ml_pred.get('confidence', '?')})"
                 )
@@ -712,14 +1168,39 @@ class AutoTradeEngine:
                 decision.signals["override_reason"] = (
                     f"Rule + ML agree on {decision.action.value}"
                 )
-            elif _final_source == "rule_only":
+            elif _final_source == "ml_hold_breakout":
                 decision.signals["override_reason"] = (
-                    "ML signal absent or ambiguous; rule-based used"
+                    f"ML directional while rules HOLD (min conf "
+                    f"{getattr(self.settings, 'ml_hold_breakout_min_confidence', 0.58)}) → "
+                    f"{decision.action.value}"
                 )
+            elif _final_source == "ml_moderate_influence":
+                decision.signals["override_reason"] = (
+                    f"ML moderate influence (floor–override): "
+                    f"{_ml_pred.get('confidence', '?')} vs rule conflict → {decision.action.value}"
+                )
+            elif _final_source in ("rule_only", "rule_based"):
+                if ml_out is not None and self.ml_enabled:
+                    decision.signals["override_reason"] = (
+                        f"ML produced {ml_out.signal.value} @ {ml_out.confidence:.2f} "
+                        f"but rules retained (conflict or thresholds)"
+                    )
+                else:
+                    decision.signals["override_reason"] = (
+                        "ML signal absent or ambiguous; rule-based used"
+                    )
             elif _final_source == "rule_only_ml_disabled":
                 decision.signals["override_reason"] = "ML disabled"
             else:
                 decision.signals["override_reason"] = _final_source
+
+            self._apply_ml_audit_fields(
+                decision,
+                ml_context=ml_context,
+                ml_out=ml_out,
+                ml_infer_present=self.ml_infer is not None,
+                rule_signal_value=rule_signal_value,
+            )
 
             # Explicit ML alignment proof for each decision cycle
             decision.signals["ml_context"] = {
@@ -729,11 +1210,67 @@ class AutoTradeEngine:
                 "model_version": ml_context.get("model_version"),
                 "prediction": decision.signals.get("ml_signal"),
                 "confidence": decision.signals.get("ml_confidence"),
+                "ml_status": decision.signals.get("ml_status"),
                 "changed_final_action": ml_changed_final_action,
                 "model_dir": ml_context.get("model_dir"),
                 "model_exists": ml_context.get("model_exists"),
                 "specific_match": ml_context.get("specific_match"),
             }
+
+            open_position = self._get_open_position(symbol)
+
+            if not self.ml_enabled:
+                ml_ok_gate = True
+            elif not ml_context.get("model_exists"):
+                ml_ok_gate = False
+            else:
+                ml_ok_gate = self.ml_infer is not None and ml_out is not None
+            gate_eval = evaluate_entry_gates(
+                adx=float(decision.adx),
+                rsi=float(decision.rsi),
+                atr_pct=float(decision.atr_pct),
+                ema_fast=float(decision.ema_fast),
+                ema_slow=float(decision.ema_slow),
+                adx_threshold=float(self.settings.adx_threshold),
+                atr_vol_threshold=float(self.settings.atr_vol_threshold),
+                rsi_buy_min=float(self.settings.rsi_buy_min),
+                rsi_buy_max=float(self.settings.rsi_buy_max),
+                ml_ok=ml_ok_gate,
+                risk_ok=True,
+            )
+            if getattr(self.settings, "strict_entry_gates", False):
+                if decision.action == SignalAction.BUY and not open_position:
+                    failed = gate_eval.get("failed_gates") or []
+                    if failed:
+                        decision.action = SignalAction.HOLD
+                        decision.reason = (
+                            f"[STRICT_GATE] {failed} | {decision.reason}"
+                        )
+
+            self._enrich_cycle_debug(
+                decision,
+                rule_confidence_before_ml=rule_confidence_before_ml,
+                has_open_position=open_position is not None,
+            )
+            self._attach_cycle_envelope(
+                decision,
+                symbol=symbol,
+                timeframe=timeframe,
+                rule_signal_value=rule_signal_value,
+                rule_confidence_before_ml=rule_confidence_before_ml,
+                ml_signal_str=decision.signals.get("ml_signal"),
+                ml_conf=decision.signals.get("ml_confidence"),
+                model_loaded=bool(ml_context.get("model_exists")),
+                feature_columns_present=feature_columns_valid(df),
+                final_source=str(decision.signals.get("final_source", "rule_only")),
+                open_position=open_position,
+                gate_eval=gate_eval,
+                ml_error=(
+                    decision.signals.get("ml_load_error")
+                    or decision.signals.get("ml_prediction_error")
+                ),
+                cooldown_blocked=False,
+            )
 
             # Audit log: pipeline visibility for diagnostics (rule / ML / final / source)
             source = decision.signals.get("final_source", "?")
@@ -753,12 +1290,12 @@ class AutoTradeEngine:
                 symbol=symbol,
             )
 
-            open_position = self._get_open_position(symbol)
-
             if decision.action == SignalAction.SELL and open_position:
                 result = self._execute_sell(
                     symbol=symbol, position=open_position, price=current_price
                 )
+                if not result.executed:
+                    self._patch_cycle_execution_block(decision, result.reason)
 
                 # Save decision with execution status
                 decision_log = self._save_decision(
@@ -772,9 +1309,139 @@ class AutoTradeEngine:
                 return result
 
             if decision.action == SignalAction.BUY and not open_position:
-                result = self._execute_buy(
-                    symbol=symbol, price=current_price, risk_pct=risk_pct
+                fs = str(decision.signals.get("final_source", ""))
+                if self.ml_enabled and ml_out is not None and fs in (
+                    "ml_prioritize",
+                    "ml_override",
+                    "combined",
+                    "ml_hold_breakout",
+                    "ml_moderate_influence",
+                ):
+                    abs_min = float(
+                        getattr(self.settings, "ml_absolute_min_confidence", 0.50)
+                    )
+                    thr = max(
+                        abs_min,
+                        float(
+                            getattr(self.settings, "ml_min_trade_confidence", 0.55)
+                        ),
+                    )
+                    if float(ml_out.confidence) < abs_min:
+                        decision.signals["ml_execution_gate"] = (
+                            f"blocked_ml_conf_{float(ml_out.confidence):.3f}<{abs_min}"
+                        )
+                        self._save_decision(
+                            decision, symbol, timeframe, executed=False
+                        )
+                        return TradeResult(
+                            success=True,
+                            executed=False,
+                            signal="BUY",
+                            reason=(
+                                f"ML confidence {float(ml_out.confidence):.3f} below "
+                                f"ML_ABSOLUTE_MIN_CONFIDENCE ({abs_min})"
+                            ),
+                            price=current_price,
+                        )
+                    if float(ml_out.confidence) < thr:
+                        decision.signals["ml_execution_gate"] = (
+                            f"blocked_ml_conf_{float(ml_out.confidence):.3f}<{thr}"
+                        )
+                        self._save_decision(
+                            decision, symbol, timeframe, executed=False
+                        )
+                        return TradeResult(
+                            success=True,
+                            executed=False,
+                            signal="BUY",
+                            reason=(
+                                f"ML confidence {float(ml_out.confidence):.3f} below "
+                                f"ML_MIN_TRADE_CONFIDENCE ({thr})"
+                            ),
+                            price=current_price,
+                        )
+                adx_min = float(
+                    getattr(self.settings, "ml_min_adx_for_trade", 0) or 0
                 )
+                if adx_min > 0 and float(decision.adx) < adx_min:
+                    decision.signals["market_filter"] = "low_adx"
+                    self._save_decision(decision, symbol, timeframe, executed=False)
+                    return TradeResult(
+                        success=True,
+                        executed=False,
+                        signal="BUY",
+                        reason=f"Blocked: ADX {decision.adx:.1f} < {adx_min}",
+                        price=current_price,
+                    )
+                atr_min = float(
+                    getattr(self.settings, "ml_min_atr_pct_for_trade", 0) or 0
+                )
+                if atr_min > 0 and float(decision.atr_pct) < atr_min:
+                    decision.signals["market_filter"] = "low_volatility"
+                    self._save_decision(decision, symbol, timeframe, executed=False)
+                    return TradeResult(
+                        success=True,
+                        executed=False,
+                        signal="BUY",
+                        reason=f"Blocked: ATR% {decision.atr_pct:.3f} < {atr_min}",
+                        price=current_price,
+                    )
+
+                effective_risk = risk_pct
+                try:
+                    from src.rl.hybrid import adjust_risk_for_trade
+
+                    last_pnl: Optional[float] = None
+                    try:
+                        lp = (
+                            self.db.query(Position)
+                            .filter(
+                                Position.symbol == symbol,
+                                Position.mode == "live",
+                                Position.is_open == False,  # noqa: E712
+                            )
+                            .order_by(desc(Position.exit_ts))
+                            .limit(1)
+                            .first()
+                        )
+                        if lp is not None and lp.pnl is not None:
+                            last_pnl = float(lp.pnl)
+                    except Exception:
+                        pass
+
+                    effective_risk, hnote = adjust_risk_for_trade(
+                        self.settings,
+                        self.client,
+                        symbol,
+                        risk_pct,
+                        decision.action.value,
+                        float(ml_out.confidence) if ml_out else None,
+                        df,
+                        last_closed_pnl=last_pnl,
+                    )
+                    if hnote:
+                        decision.signals["hybrid_risk"] = hnote
+                    if effective_risk is not None and effective_risk <= 0:
+                        self._save_decision(
+                            decision, symbol, timeframe, executed=False
+                        )
+                        return TradeResult(
+                            success=True,
+                            executed=False,
+                            signal="BUY",
+                            reason="Portfolio cap: no headroom for this asset",
+                            price=current_price,
+                        )
+                except Exception as hy_err:
+                    decision.signals["hybrid_risk_error"] = str(hy_err)[:200]
+
+                result = self._execute_buy(
+                    symbol=symbol,
+                    price=current_price,
+                    risk_pct=effective_risk,
+                )
+                if not result.executed:
+                    self._patch_cycle_execution_block(decision, result.reason)
 
                 # Save decision with execution status
                 decision_log = self._save_decision(

@@ -9,6 +9,7 @@ from sqlalchemy import or_, desc, text
 from src.core.config import get_settings
 from src.db.session import SessionLocal, engine
 from src.db.models import TradingDecisionLog, EventLog, Trade
+from src.live.gate_stats import distribution_pct
 
 router = APIRouter(prefix="/status", tags=["status"])
 
@@ -224,3 +225,179 @@ def startup_check() -> Dict[str, Any]:
         "latest_decision": summary.get("latest_decision"),
         "observability": summary.get("observability"),
     }
+
+
+@router.get("/model-health")
+def model_health(load_model: bool = True, smoke: bool = False) -> Dict[str, Any]:
+    """Runtime ML resolution + optional load check (for audits).
+
+    Set load_model=false to only resolve paths (lighter; use when polling frequently).
+    Set smoke=true to run one inference on recent klines (slower; verifies features + predict).
+    """
+    s = get_settings()
+    out: Dict[str, Any] = {
+        "ok": True,
+        "ml_enabled": bool(getattr(s, "ml_enabled", False)),
+        "ml_model_dir": getattr(s, "ml_model_dir", ""),
+        "fully_adaptive_engine": bool(getattr(s, "fully_adaptive_engine", False)),
+        "trade_symbol": getattr(s, "trade_symbol", "BTCUSDT"),
+        "trade_timeframe": getattr(s, "trade_timeframe", "5m"),
+        "model_resolved": None,
+        "inferencer_loaded": False,
+        "load_model_attempted": False,
+        "correct_symbol_match": None,
+        "feature_columns_valid": None,
+        "inference_working": None,
+        "model_loaded": False,
+        "error": None,
+    }
+    if not out["ml_enabled"]:
+        out["note"] = "ML disabled in settings (ML_ENABLED=false)"
+        return out
+    try:
+        import os as _os
+
+        from src.ml.model_selector import resolve_model_selection
+
+        version = _os.getenv("ML_MODEL_VERSION", "").strip() or None
+        ctx = resolve_model_selection(
+            base_model_dir=s.ml_model_dir,
+            symbol=s.trade_symbol,
+            timeframe=s.trade_timeframe,
+            version=version,
+        )
+        out["model_resolved"] = ctx
+        out["correct_symbol_match"] = bool(ctx.get("specific_match"))
+        if ctx.get("model_exists") and load_model:
+            out["load_model_attempted"] = True
+            from src.ml.inference import get_infer
+
+            inf = get_infer(str(ctx["model_dir"]))
+            out["inferencer_loaded"] = inf is not None
+            out["model_loaded"] = bool(inf is not None)
+            if inf is not None and smoke:
+                try:
+                    import pandas as pd
+
+                    from src.features.indicators import add_all_indicators
+                    from src.ml.dataset import append_ml_production_features
+                    from src.ml.data_fetch import fetch_public_klines
+                    from src.ml.runtime_check import feature_columns_valid, inference_smoke_test
+
+                    lb = int(getattr(s, "ml_lookback", 50) or 50)
+                    df = None
+                    try:
+                        from src.exchange.binance_spot_client import BinanceSpotClient
+
+                        client = BinanceSpotClient()
+                        klines = client.klines(
+                            symbol=s.trade_symbol,
+                            interval=s.trade_timeframe,
+                            limit=max(lb + 50, 120),
+                        )
+                        df = pd.DataFrame(
+                            klines,
+                            columns=[
+                                "open_time",
+                                "open",
+                                "high",
+                                "low",
+                                "close",
+                                "volume",
+                                "close_time",
+                                "qav",
+                                "num_trades",
+                                "taker_base",
+                                "taker_quote",
+                                "ignore",
+                            ],
+                        )
+                    except Exception:
+                        df = None
+                    if df is None or len(df) < 60:
+                        df = fetch_public_klines(
+                            s.trade_symbol, s.trade_timeframe, limit=max(lb + 80, 200)
+                        )
+                    for col in ["open", "high", "low", "close", "volume"]:
+                        df.loc[:, col] = df[col].astype(float)
+                    indicator_config = {
+                        "ema_fast": s.ema_fast,
+                        "ema_slow": s.ema_slow,
+                        "rsi_period": s.rsi_len,
+                        "adx_period": 14,
+                        "bb_period": s.bb_len,
+                        "bb_std": s.bb_std,
+                        "atr_period": 14,
+                    }
+                    df = add_all_indicators(df, indicator_config)
+                    df = append_ml_production_features(df)
+                    df = df.dropna()
+                    out["feature_columns_valid"] = feature_columns_valid(df)
+                    sm = inference_smoke_test(inf, df)
+                    out["inference_working"] = bool(sm.get("inference_working"))
+                    out["model_loaded"] = True
+                    if sm.get("error"):
+                        out["inference_error"] = sm["error"]
+                except Exception as ex:
+                    out["inference_working"] = False
+                    out["inference_error"] = str(ex)[:500]
+            elif inf is not None:
+                out["inference_working"] = None
+                out["note"] = (
+                    (out.get("note") or "")
+                    + " | set smoke=true for live inference check"
+                ).strip(" |")
+        elif ctx.get("model_exists") and not load_model:
+            out["note"] = "model.keras present; load_model=false (skipped inferencer load)"
+        else:
+            out["note"] = "No model.keras found for resolved path"
+    except Exception as e:
+        out["ok"] = False
+        out["error"] = str(e)
+    out["model_loaded"] = bool(out.get("inferencer_loaded"))
+    return out
+
+
+@router.get("/runtime-paths")
+def runtime_paths() -> Dict[str, Any]:
+    """Which strategy engine + scheduler + symbols are active."""
+    s = get_settings()
+    scheduler_state = "unknown"
+    try:
+        from src.scheduler.runner import scheduler as _sched
+
+        job = _sched.get_job("live_trading_job")
+        if _sched.running and job:
+            scheduler_state = "running"
+        elif _sched.running and not job:
+            scheduler_state = "running(no-job)"
+        else:
+            scheduler_state = "stopped"
+    except Exception:
+        scheduler_state = "unavailable"
+
+    live_env = os.getenv("LIVE_SCHEDULER_ENABLED", "")
+    return {
+        "ok": True,
+        "strategy_engine": (
+            "fully_adaptive" if getattr(s, "fully_adaptive_engine", False) else "adaptive"
+        ),
+        "scheduler_state": scheduler_state,
+        "live_scheduler_env": live_env,
+        "trade_symbol": getattr(s, "trade_symbol", "BTCUSDT"),
+        "trade_timeframe": getattr(s, "trade_timeframe", "5m"),
+        "binance_testnet": bool(s.binance_testnet),
+        "binance_spot_base_url": s.binance_spot_base_url,
+    }
+
+
+@router.get("/runtime")
+def runtime_status() -> Dict[str, Any]:
+    """Alias for GET /status/runtime-paths (spec name: /status/runtime)."""
+    return runtime_paths()
+
+
+@router.get("/gate-stats")
+def gate_stats_endpoint() -> Dict[str, Any]:
+    """Rolling % of HOLD reasons by kind (in-process since process start)."""
+    return {"ok": True, **distribution_pct()}

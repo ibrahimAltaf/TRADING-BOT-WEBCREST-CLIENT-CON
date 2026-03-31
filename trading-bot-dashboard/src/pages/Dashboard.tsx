@@ -13,6 +13,8 @@ import {
   usePerformanceQuery,
   useMlVsRulesQuery,
   useTradeEvaluationQuery,
+  useLiveProofQuery,
+  useMlAnalysisQuery,
 } from "../apis/exchange/useExchangeQueries";
 import PerformanceCard from "../components/exchange/PerformanceCard";
 import { useStartupCheck } from "../apis/api-summary/useStatusSummary";
@@ -139,6 +141,8 @@ export default function DashboardPage() {
   const performance = usePerformanceQuery("live");
   const mlVsRules = useMlVsRulesQuery("live");
   const tradeEvaluation = useTradeEvaluationQuery("live");
+  const liveProof = useLiveProofQuery(200);
+  const mlAnalysis = useMlAnalysisQuery(500);
   const startup = useStartupCheck();
 
   const isLoading =
@@ -151,10 +155,13 @@ export default function DashboardPage() {
     performance.isLoading ||
     mlVsRules.isLoading ||
     tradeEvaluation.isLoading ||
+    liveProof.isLoading ||
+    mlAnalysis.isLoading ||
     startup.loading;
 
   const refreshAll = () => {
     queryClient.invalidateQueries({ queryKey: ["exchange"] });
+    queryClient.invalidateQueries({ queryKey: ["stats"] });
   };
 
   const usdtBalance = useMemo(() => {
@@ -242,6 +249,113 @@ export default function DashboardPage() {
           error={performance.error?.message}
           mode="live"
         />
+      </Panel>
+
+      <Panel title="ML live proof (audit API)">
+        {liveProof.error ? (
+          <div className="text-sm text-rose-600">{liveProof.error.message}</div>
+        ) : liveProof.isLoading ? (
+          <div className="flex justify-center py-6">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-slate-600" />
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <StatCard
+                title="ML used % (decisions)"
+                value={fmtPct(liveProof.data?.ml_used_percentage ?? null)}
+                subtitle={
+                  liveProof.data?.sample_size != null
+                    ? `n=${liveProof.data.sample_size} recent`
+                    : "—"
+                }
+                tone={
+                  (liveProof.data?.ml_used_percentage ?? 0) >= 30
+                    ? "positive"
+                    : "neutral"
+                }
+              />
+              <StatCard
+                title="Avg ML softmax"
+                value={
+                  liveProof.data?.avg_ml_confidence != null
+                    ? fmtNumber(liveProof.data.avg_ml_confidence, 3)
+                    : "—"
+                }
+                subtitle="From /stats/live-proof"
+              />
+              <StatCard
+                title="High ML conf (>0.7)"
+                value={
+                  liveProof.data?.high_confidence_ratio != null
+                    ? fmtPct(
+                        liveProof.data.high_confidence_ratio * 100,
+                      )
+                    : "—"
+                }
+                subtitle="Share in sample"
+              />
+              <StatCard
+                title="Live PnL (closed sample)"
+                value={fmtMoney(liveProof.data?.live_pnl_sum_usdt)}
+                subtitle={
+                  liveProof.data?.closed_trades_sample != null
+                    ? `${liveProof.data.closed_trades_sample} trades`
+                    : "—"
+                }
+              />
+            </div>
+            {mlAnalysis.data && !mlAnalysis.error && (
+              <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+                <span className="font-semibold text-slate-700">
+                  /stats/ml-analysis
+                </span>
+                {" — "}samples: {mlAnalysis.data.ml_confidence_samples ?? "—"},{" "}
+                avg softmax {fmtNumber(mlAnalysis.data.avg_ml_confidence, 3)}, share
+                above 0.8{" "}
+                {mlAnalysis.data.high_confidence_ratio_08 != null
+                  ? fmtPct(mlAnalysis.data.high_confidence_ratio_08 * 100)
+                  : "—"}
+              </div>
+            )}
+            {liveProof.data?.final_source_counts &&
+              Object.keys(liveProof.data.final_source_counts).length > 0 && (
+                <div>
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Final source (recent)
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(liveProof.data.final_source_counts).map(
+                      ([src, n]) => (
+                        <span
+                          key={src}
+                          className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700"
+                        >
+                          {src || "—"}: {n}
+                        </span>
+                      ),
+                    )}
+                  </div>
+                </div>
+              )}
+            {liveProof.data?.alerts?.length ? (
+              <ul className="space-y-1 text-sm">
+                {liveProof.data.alerts.map((a) => (
+                  <li
+                    key={`${a.code}-${a.message}`}
+                    className={
+                      a.level === "WARN"
+                        ? "text-amber-700"
+                        : "text-slate-600"
+                    }
+                  >
+                    <span className="font-medium">[{a.level}]</span> {a.message}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        )}
       </Panel>
 
       <Panel

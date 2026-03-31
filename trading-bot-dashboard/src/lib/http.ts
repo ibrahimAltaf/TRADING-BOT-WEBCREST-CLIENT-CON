@@ -18,9 +18,46 @@ function normalizeApiBase(raw: string): string {
   return `${withoutPort}/api`;
 }
 
-const API_BASE = normalizeApiBase(
-  String(import.meta.env.VITE_API_BASE_URL || "").trim() || DEFAULT_API_BASE,
-);
+/**
+ * True when env points at a machine-local API (nginx on :80, uvicorn, LAN IP).
+ * In that case we must NOT use it in dev — browser Origin (127.0.0.1 vs localhost vs 192.168.x.x)
+ * must match the API host or you get CORS. Relative `/api` + Vite proxy fixes all cases.
+ */
+function isLocalApiUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.toLowerCase();
+    if (h === "localhost" || h === "127.0.0.1") return true;
+    if (h.startsWith("192.168.") || h.startsWith("10.")) return true;
+    if (h.startsWith("172.")) {
+      const p = h.split(".").map(Number);
+      if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve axios baseURL:
+ * - `/api` — relative: Vite dev proxy → backend :8000 (same origin as UI → no CORS).
+ * - Full remote URL — production / explicit remote API in dev.
+ */
+function resolveApiBase(): string {
+  const raw = String(import.meta.env.VITE_API_BASE_URL ?? "").trim();
+  if (raw.startsWith("/")) {
+    return raw;
+  }
+  if (import.meta.env.DEV) {
+    if (!raw || isLocalApiUrl(raw)) {
+      return "/api";
+    }
+  }
+  return normalizeApiBase(raw || DEFAULT_API_BASE);
+}
+
+const API_BASE = resolveApiBase();
 
 export const http = axios.create({
   baseURL: API_BASE,

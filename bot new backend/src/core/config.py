@@ -1,7 +1,11 @@
 import os
 from pathlib import Path
 from dataclasses import dataclass
+from typing import Tuple
+
 from dotenv import load_dotenv
+
+from src.core.symbols import parse_supported_trading_symbols
 
 # Load .env from project root
 load_dotenv()
@@ -23,11 +27,38 @@ class Settings:
     ml_lookback: int
     ml_agree_threshold: float
     ml_override_threshold: float
+    ml_prioritize_threshold: float
+    # When rules say HOLD but ML is directional (BUY/SELL), adopt ML if confidence >= min
+    ml_hold_breakout_enabled: bool
+    ml_hold_breakout_min_confidence: float
+    # If ML_ENABLED: fail cycle loudly when model missing or inference fails (no silent rule-only fallback)
+    ml_strict: bool
+    # When true, block BUY when any entry gate fails (observability-first default: false)
+    strict_entry_gates: bool
+    # Fernet key (urlsafe base64) for encrypting persisted exchange secrets; empty = store plaintext (dev only)
+    secrets_encryption_key: str
+    # Minimum ML softmax confidence to execute when trade is ML-driven (0–1)
+    ml_min_trade_confidence: float
+    # Never execute ML-driven trades below this (safety floor, default 0.5)
+    ml_absolute_min_confidence: float
+    # If > 0: block trades when ADX below this (sideways filter); 0 disables
+    ml_min_adx_for_trade: float
+    # If > 0: block when ATR%% below this (dead market); 0 disables
+    ml_min_atr_pct_for_trade: float
     # Adaptive Trading Strategy Parameters
     # General
     trade_symbol: str
     trade_timeframe: str
     trade_lookback: int
+    # Multi-coin: Binance symbols (e.g. BTCUSDT,ETHUSDT,SOLUSDT); scheduler runs each
+    supported_trading_symbols: Tuple[str, ...]
+    # RL portfolio (optional; requires requirements-rl.txt)
+    rl_hybrid_enabled: bool
+    rl_ppo_model_path: str
+    rl_max_weight_per_asset: float
+    portfolio_rebalance_cycles: int
+    portfolio_max_drawdown_pct: float
+    portfolio_loss_reduce_factor: float
     # Regime Detection
     adx_threshold: float
     atr_vol_threshold: float
@@ -115,11 +146,26 @@ def get_settings() -> Settings:
     binance_spot_base_url = spot_testnet if binance_testnet else spot_mainnet
 
     # ===== ML (Phase-1 included, feature-flagged) =====
-    ml_enabled = _env_bool("ML_ENABLED", "false")
-    ml_model_dir = os.getenv("ML_MODEL_DIR", "models/lstm_v1").strip()
-    ml_lookback = _env_int("ML_LOOKBACK", "100")
+    # Default true: ML is part of the product pipeline; disable explicitly for dev/CI without a model.
+    ml_enabled = _env_bool("ML_ENABLED", "true")
+    ml_model_dir = os.getenv("ML_MODEL_DIR", "models/btc_usdt_5m").strip()
+    ml_lookback = _env_int("ML_LOOKBACK", "50")
     ml_agree_threshold = _env_float("ML_AGREE_THRESHOLD", "0.70")
-    ml_override_threshold = _env_float("ML_OVERRIDE_THRESHOLD", "0.85")
+    # When ML confidence >= this, follow ML even if directional rules disagree.
+    ml_override_threshold = _env_float("ML_OVERRIDE_THRESHOLD", "0.60")
+    ml_prioritize_threshold = _env_float("ML_PRIORITIZE_THRESHOLD", "0.70")
+    ml_hold_breakout_enabled = _env_bool("ML_HOLD_BREAKOUT_ENABLED", "true")
+    ml_hold_breakout_min_confidence = _env_float(
+        "ML_HOLD_BREAKOUT_MIN_CONFIDENCE", "0.52"
+    )
+    # When ML is enabled and a model is expected, do not silently fall back to rules on load/infer failure.
+    ml_strict = _env_bool("ML_STRICT", "true")
+    strict_entry_gates = _env_bool("STRICT_ENTRY_GATES", "false")
+    secrets_encryption_key = os.getenv("SECRETS_ENCRYPTION_KEY", "").strip()
+    ml_min_trade_confidence = _env_float("ML_MIN_TRADE_CONFIDENCE", "0.55")
+    ml_absolute_min_confidence = _env_float("ML_ABSOLUTE_MIN_CONFIDENCE", "0.50")
+    ml_min_adx_for_trade = _env_float("ML_MIN_ADX_FOR_TRADE", "0")
+    ml_min_atr_pct_for_trade = _env_float("ML_MIN_ATR_PCT_FOR_TRADE", "0")
 
     # Resolve ML model dir relative to project root
     ml_model_path = Path(ml_model_dir).resolve()
@@ -129,6 +175,13 @@ def get_settings() -> Settings:
     trade_symbol = os.getenv("TRADE_SYMBOL", "BTCUSDT").strip()
     trade_timeframe = os.getenv("TRADE_TIMEFRAME", "5m").strip()
     trade_lookback = _env_int("TRADE_LOOKBACK", "500")
+    supported_trading_symbols = parse_supported_trading_symbols()
+    rl_hybrid_enabled = _env_bool("RL_HYBRID_ENABLED", "false")
+    rl_ppo_model_path = os.getenv("RL_PPO_MODEL_PATH", "").strip()
+    rl_max_weight_per_asset = _env_float("RL_MAX_WEIGHT_PER_ASSET", "0.40")
+    portfolio_rebalance_cycles = _env_int("PORTFOLIO_REBALANCE_CYCLES", "20")
+    portfolio_max_drawdown_pct = _env_float("PORTFOLIO_MAX_DRAWDOWN_PCT", "0.15")
+    portfolio_loss_reduce_factor = _env_float("PORTFOLIO_LOSS_REDUCE_FACTOR", "0.65")
 
     # Regime Detection
     adx_threshold = _env_float("ADX_THRESHOLD", "25.0")
@@ -189,10 +242,27 @@ def get_settings() -> Settings:
         ml_lookback=ml_lookback,
         ml_agree_threshold=ml_agree_threshold,
         ml_override_threshold=ml_override_threshold,
+        ml_prioritize_threshold=ml_prioritize_threshold,
+        ml_hold_breakout_enabled=ml_hold_breakout_enabled,
+        ml_hold_breakout_min_confidence=ml_hold_breakout_min_confidence,
+        ml_strict=ml_strict,
+        strict_entry_gates=strict_entry_gates,
+        secrets_encryption_key=secrets_encryption_key,
+        ml_min_trade_confidence=ml_min_trade_confidence,
+        ml_absolute_min_confidence=ml_absolute_min_confidence,
+        ml_min_adx_for_trade=ml_min_adx_for_trade,
+        ml_min_atr_pct_for_trade=ml_min_atr_pct_for_trade,
         # Adaptive Trading
         trade_symbol=trade_symbol,
         trade_timeframe=trade_timeframe,
         trade_lookback=trade_lookback,
+        supported_trading_symbols=supported_trading_symbols,
+        rl_hybrid_enabled=rl_hybrid_enabled,
+        rl_ppo_model_path=rl_ppo_model_path,
+        rl_max_weight_per_asset=rl_max_weight_per_asset,
+        portfolio_rebalance_cycles=portfolio_rebalance_cycles,
+        portfolio_max_drawdown_pct=portfolio_max_drawdown_pct,
+        portfolio_loss_reduce_factor=portfolio_loss_reduce_factor,
         adx_threshold=adx_threshold,
         atr_vol_threshold=atr_vol_threshold,
         ema_fast=ema_fast,

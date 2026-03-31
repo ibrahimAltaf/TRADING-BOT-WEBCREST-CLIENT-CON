@@ -175,7 +175,13 @@ def put_exchange_config(body: ExchangeConfigIn, authorization: Optional[str] = H
         if body.api_key and body.api_key.strip():
             config.api_key = body.api_key.strip()
         if body.api_secret and body.api_secret.strip():
-            config.api_secret = body.api_secret.strip()
+            from src.core.config import get_settings as _gs
+            from src.core.secrets_crypto import encrypt_optional
+
+            _s = _gs()
+            config.api_secret = encrypt_optional(
+                body.api_secret.strip(), _s.secrets_encryption_key
+            )
         db.commit()
         return {
             "ok": True,

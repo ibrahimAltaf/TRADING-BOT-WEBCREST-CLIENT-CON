@@ -66,6 +66,19 @@ export type TradingDecision = {
 
   executed: boolean;
   order_id: number | string | null;
+
+  /** Per-cycle audit (rule/ml/final confidence, hold_kind, block_reasons) */
+  cycle_debug?: {
+    rule_confidence: number;
+    ml_confidence: number | null;
+    final_confidence: number;
+    final_source: string;
+    hold_kind: string | null;
+    block_reasons: string[];
+    execution_eligible: boolean;
+    has_open_position: boolean;
+    execution_block_reason?: string;
+  };
 };
 
 export type ExchangeDecisionLatestResponse = {

@@ -994,6 +994,7 @@ def get_recent_decisions(
                 "specific_model_match": ml_context.get("specific_match"),
                 "executed": d.executed,
                 "order_id": d.order_id,
+                "cycle_debug": parsed_signals.get("cycle_debug"),
             }
         )
 
@@ -1075,6 +1076,7 @@ def get_latest_decision(
             "ml_alignment": parsed_signals.get("ml_context", {}),
             "executed": decision.executed,
             "order_id": decision.order_id,
+            "cycle_debug": parsed_signals.get("cycle_debug"),
         },
     }
 

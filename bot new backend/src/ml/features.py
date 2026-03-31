@@ -1,14 +1,38 @@
+from __future__ import annotations
+
+from typing import List, Optional
+
 import pandas as pd
 
-FEATURE_COLUMNS = [
-    "open","high","low","close","volume",
-    "ema_20","ema_50","rsi_14","atr_14",
-    "macd","macd_signal","macd_hist",
-    "vol_sma_20","vol_ratio",
+from src.ml.feature_columns import FEATURE_COLUMNS_PRODUCTION
+
+# Older lstm_v1 checkpoints used this layout
+FEATURE_COLUMNS_LEGACY = [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "ema_20",
+    "ema_50",
+    "rsi_14",
+    "atr_14",
+    "macd",
+    "macd_signal",
+    "macd_hist",
+    "vol_sma_20",
+    "vol_ratio",
 ]
 
-def select_features(df: pd.DataFrame) -> pd.DataFrame:
-    missing = [c for c in FEATURE_COLUMNS if c not in df.columns]
+# Default export for docs / backward compat
+FEATURE_COLUMNS = FEATURE_COLUMNS_PRODUCTION
+
+
+def select_features(
+    df: pd.DataFrame, columns: Optional[List[str]] = None
+) -> pd.DataFrame:
+    cols = columns if columns is not None else FEATURE_COLUMNS_LEGACY
+    missing = [c for c in cols if c not in df.columns]
     if missing:
         raise ValueError(f"Missing feature columns: {missing}")
-    return df[FEATURE_COLUMNS].copy()
+    return df[cols].copy()
