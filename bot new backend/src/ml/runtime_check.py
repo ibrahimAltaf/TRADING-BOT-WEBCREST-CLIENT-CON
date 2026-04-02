@@ -66,8 +66,11 @@ def validate_symbol_ml_runtime(
         out["reason"] = "model_artifacts_missing"
         return out
 
+    # Lightweight scheduler check: artifacts on disk + resolution OK; TensorFlow
+    # load happens in execute_auto_trade or use load_model=true on /status/model-health/symbols.
     if not load_model:
-        out["reason"] = "load_skipped"
+        out["ready"] = True
+        out["reason"] = "path_check_only"
         return out
 
     try:

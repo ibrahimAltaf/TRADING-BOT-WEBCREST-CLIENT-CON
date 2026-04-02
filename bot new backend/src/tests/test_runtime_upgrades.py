@@ -124,8 +124,8 @@ class TestSymbolMLValidation:
         )
         assert result["model_exists"] is True
         assert result["specific_match"] is True
-        # load_model=False so ready stays False (load_skipped)
-        assert result["reason"] == "load_skipped"
+        assert result["ready"] is True
+        assert result["reason"] == "path_check_only"
 
 
 # ---------------------------------------------------------------------------
