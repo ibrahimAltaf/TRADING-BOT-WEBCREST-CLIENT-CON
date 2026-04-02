@@ -28,6 +28,91 @@ def inference_smoke_test(ml_infer: Any, df: pd.DataFrame) -> Dict[str, Any]:
     return out
 
 
+def validate_symbol_ml_runtime(
+    symbol: str,
+    timeframe: str,
+    base_model_dir: str,
+    version: Optional[str] = None,
+    load_model: bool = True,
+) -> Dict[str, Any]:
+    """Validate ML readiness for a single symbol/timeframe.
+
+    Returns a dict with: symbol, timeframe, model_exists, specific_match,
+    tensorflow_ok, model_load_ok, ready, reason, error.
+    """
+    from src.ml.model_selector import resolve_model_selection
+
+    ctx = resolve_model_selection(
+        base_model_dir=base_model_dir,
+        symbol=symbol,
+        timeframe=timeframe,
+        version=version,
+    )
+    out: Dict[str, Any] = {
+        "symbol": ctx["symbol"],
+        "timeframe": ctx["timeframe"],
+        "model_dir": ctx["model_dir"],
+        "model_key": ctx["model_key"],
+        "model_version": ctx["model_version"],
+        "model_exists": bool(ctx["model_exists"]),
+        "specific_match": bool(ctx["specific_match"]),
+        "tensorflow_ok": False,
+        "model_load_ok": False,
+        "ready": False,
+        "reason": None,
+        "error": None,
+    }
+    if not ctx["model_exists"]:
+        out["reason"] = "model_artifacts_missing"
+        return out
+
+    if not load_model:
+        out["reason"] = "load_skipped"
+        return out
+
+    try:
+        from src.ml.inference import get_infer
+
+        infer = get_infer(str(ctx["model_dir"]))
+        out["tensorflow_ok"] = True
+        out["model_load_ok"] = infer is not None
+        out["ready"] = infer is not None
+    except ImportError:
+        out["reason"] = "tensorflow_unavailable"
+        out["error"] = "TensorFlow not installed"
+    except Exception as e:
+        out["tensorflow_ok"] = True  # import worked, load failed
+        out["reason"] = "model_load_failed"
+        out["error"] = str(e)[:500]
+
+    return out
+
+
+def validate_all_symbols_ml_runtime(
+    symbols: List[str],
+    timeframe: str,
+    base_model_dir: str,
+    version: Optional[str] = None,
+    require_exact_match: bool = True,
+    load_model: bool = True,
+) -> Dict[str, Dict[str, Any]]:
+    """Validate ML readiness for all symbols. Returns {symbol: health_dict}."""
+    results: Dict[str, Dict[str, Any]] = {}
+    for sym in symbols:
+        health = validate_symbol_ml_runtime(
+            symbol=sym,
+            timeframe=timeframe,
+            base_model_dir=base_model_dir,
+            version=version,
+            load_model=load_model,
+        )
+        if require_exact_match and not health["specific_match"] and health["model_exists"]:
+            health["ready"] = False
+            health["reason"] = "exact_model_match_required"
+        results[sym] = health
+    return results
+
+
 def validate_features_or_raise(
     df: pd.DataFrame, columns: Optional[List[str]] = None
 ) -> None:

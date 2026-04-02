@@ -84,11 +84,42 @@ def _run_live_job():
 
         engine = AutoTradeEngine(db=db, client=client, risk_config=risk)
 
+        # Per-symbol ML readiness check
+        symbol_health: dict = {}
+        if bool(getattr(settings, "ml_enabled", False)):
+            try:
+                from src.ml.runtime_check import validate_all_symbols_ml_runtime
+                import os as _os
+
+                symbol_health = validate_all_symbols_ml_runtime(
+                    symbols=symbols,
+                    timeframe=timeframe,
+                    base_model_dir=settings.ml_model_dir,
+                    version=_os.getenv("ML_MODEL_VERSION", "").strip() or None,
+                    require_exact_match=bool(
+                        getattr(settings, "ml_require_exact_symbol_match", True)
+                    ),
+                    load_model=False,  # lightweight path check only
+                )
+            except Exception as health_err:
+                print(f"[SCHEDULER][{datetime.utcnow()}] ML health check error: {health_err}")
+
         b1 = client.balances_map()
         usdt_before = float(b1.get("USDT", "0"))
 
         any_executed = False
         for symbol in symbols:
+            # Skip symbols that are not ML-ready when ML_STRICT + ML_ENABLED
+            ml_strict = bool(getattr(settings, "ml_strict", False))
+            health = symbol_health.get(symbol)
+            if health and not health.get("ready") and ml_strict:
+                reason = health.get("reason", "unknown")
+                print(
+                    f"[SCHEDULER][{datetime.utcnow()}] {symbol} SKIPPED: "
+                    f"ML not ready ({reason})"
+                )
+                continue
+
             result = engine.execute_auto_trade(
                 symbol=symbol,
                 timeframe=timeframe,

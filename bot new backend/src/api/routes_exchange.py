@@ -734,15 +734,14 @@ def schedule_auto_trade(body: AutoTradeScheduleBody):
 
 
 @router.get("/positions/open")
-def get_open_positions(db: Session = Depends(get_db)):
-    """Get all currently open positions"""
+def get_open_positions(symbol: Optional[str] = None, db: Session = Depends(get_db)):
+    """Get open positions, optionally filtered by symbol."""
     from src.db.models import Position
 
-    positions = (
-        db.query(Position)
-        .filter(Position.is_open == True, Position.mode == "live")
-        .all()
-    )
+    query = db.query(Position).filter(Position.is_open == True, Position.mode == "live")
+    if symbol:
+        query = query.filter(Position.symbol == symbol.upper().strip())
+    positions = query.all()
 
     client = BinanceSpotClient()
     prices: Dict[str, float] = {}
@@ -1103,26 +1102,62 @@ def exchange_proof(symbol: Optional[str] = None, db: Session = Depends(get_db)):
     """
     Unified verification snapshot for audit/monitoring.
     Includes decisions, balances, pnl, orders, positions, and recent logs.
+    Each subsection is isolated — one failure does not invalidate the rest.
     """
     from src.db.models import Position, Trade, EventLog, TradingDecisionLog
 
     s = get_settings()
     selected_symbol = (symbol or s.trade_symbol or "BTCUSDT").upper().strip()
 
-    # Reuse existing route handlers to keep schemas aligned.
-    balances_res = get_balances()
-    recent_decisions_res = get_recent_decisions(
-        symbol=selected_symbol,
-        action=None,
-        limit=20,
-        db=db,
-    )
-    latest_decision_res = get_latest_decision(symbol=selected_symbol, db=db)
-    open_positions_res = get_open_positions(db=db)
-    positions_history_res = get_position_history(symbol=selected_symbol, limit=20, db=db)
-    open_orders_res = get_open_orders(symbol=selected_symbol)
-    trades_res = get_my_trades(symbol=selected_symbol, limit=50)
-    recent_logs_res = get_recent_logs(limit=50, db=db)
+    section_errors: Dict[str, str] = {}
+
+    # --- balances ---
+    balances_res: Dict[str, Any] = {}
+    try:
+        balances_res = get_balances()
+    except Exception as e:
+        section_errors["balances"] = str(e)[:300]
+
+    # --- decisions ---
+    recent_decisions_res: Dict[str, Any] = {}
+    latest_decision_res: Dict[str, Any] = {}
+    try:
+        recent_decisions_res = get_recent_decisions(
+            symbol=selected_symbol, action=None, limit=20, db=db,
+        )
+        latest_decision_res = get_latest_decision(symbol=selected_symbol, db=db)
+    except Exception as e:
+        section_errors["decisions"] = str(e)[:300]
+
+    # --- positions (symbol-scoped) ---
+    open_positions_res: Dict[str, Any] = {}
+    positions_history_res: Dict[str, Any] = {}
+    try:
+        open_positions_res = get_open_positions(symbol=selected_symbol, db=db)
+        positions_history_res = get_position_history(symbol=selected_symbol, limit=20, db=db)
+    except Exception as e:
+        section_errors["positions"] = str(e)[:300]
+
+    # --- orders ---
+    open_orders_res: Dict[str, Any] = {}
+    try:
+        open_orders_res = get_open_orders(symbol=selected_symbol)
+    except Exception as e:
+        section_errors["orders"] = str(e)[:300]
+
+    # --- trades ---
+    trades_res: Dict[str, Any] = {}
+    try:
+        trades_res = get_my_trades(symbol=selected_symbol, limit=50)
+    except Exception as e:
+        section_errors["trades"] = str(e)[:300]
+
+    # --- logs ---
+    recent_logs_res: Dict[str, Any] = {}
+    try:
+        recent_logs_res = get_recent_logs(limit=50, db=db)
+    except Exception as e:
+        section_errors["logs"] = str(e)[:300]
 
     usdt_balance = next(
         (
@@ -1174,6 +1209,7 @@ def exchange_proof(symbol: Optional[str] = None, db: Session = Depends(get_db)):
     return {
         "ok": True,
         "symbol": selected_symbol,
+        "section_errors": section_errors if section_errors else None,
         "environment": {
             "binance_testnet": bool(s.binance_testnet),
             "binance_spot_base_url": s.binance_spot_base_url,

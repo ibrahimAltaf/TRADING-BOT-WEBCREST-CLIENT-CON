@@ -33,6 +33,8 @@ class Settings:
     ml_hold_breakout_min_confidence: float
     # If ML_ENABLED: fail cycle loudly when model missing or inference fails (no silent rule-only fallback)
     ml_strict: bool
+    # When true, require exact symbol/timeframe model match for live trading (no fallback to generic model)
+    ml_require_exact_symbol_match: bool
     # When true, block BUY when any entry gate fails (observability-first default: false)
     strict_entry_gates: bool
     # Fernet key (urlsafe base64) for encrypting persisted exchange secrets; empty = store plaintext (dev only)
@@ -160,6 +162,7 @@ def get_settings() -> Settings:
     )
     # When ML is enabled and a model is expected, do not silently fall back to rules on load/infer failure.
     ml_strict = _env_bool("ML_STRICT", "true")
+    ml_require_exact_symbol_match = _env_bool("ML_REQUIRE_EXACT_SYMBOL_MATCH", "true")
     strict_entry_gates = _env_bool("STRICT_ENTRY_GATES", "false")
     secrets_encryption_key = os.getenv("SECRETS_ENCRYPTION_KEY", "").strip()
     ml_min_trade_confidence = _env_float("ML_MIN_TRADE_CONFIDENCE", "0.55")
@@ -246,6 +249,7 @@ def get_settings() -> Settings:
         ml_hold_breakout_enabled=ml_hold_breakout_enabled,
         ml_hold_breakout_min_confidence=ml_hold_breakout_min_confidence,
         ml_strict=ml_strict,
+        ml_require_exact_symbol_match=ml_require_exact_symbol_match,
         strict_entry_gates=strict_entry_gates,
         secrets_encryption_key=secrets_encryption_key,
         ml_min_trade_confidence=ml_min_trade_confidence,

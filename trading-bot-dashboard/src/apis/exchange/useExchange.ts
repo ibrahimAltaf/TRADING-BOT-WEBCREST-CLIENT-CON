@@ -360,7 +360,10 @@ export function useExchangeOpenPositions() {
     setLoading(true);
     setError(null);
     try {
-      const res = await exchangeApi.positionsOpen(acRef.current.signal);
+      const res = await exchangeApi.positionsOpen(
+        undefined,
+        acRef.current.signal,
+      );
       const items = pickPositionItems(res);
       setData({
         count:

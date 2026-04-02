@@ -156,6 +156,7 @@ export type ExchangeTradesResponse = {
 export type ExchangeProofResponse = {
   ok: boolean;
   symbol: string;
+  section_errors?: Record<string, string> | null;
   environment: {
     binance_testnet: boolean;
     binance_spot_base_url: string;
@@ -529,10 +530,11 @@ export const exchangeApi = {
     return r.data;
   },
 
-  positionsOpen: async (signal?: AbortSignal) => {
+  positionsOpen: async (symbol?: string, signal?: AbortSignal) => {
     const r = await http.get<ExchangeOpenPositionsResponse>(
       "/exchange/positions/open",
       {
+        params: symbol ? { symbol } : undefined,
         signal,
       },
     );
@@ -660,10 +662,13 @@ export const exchangeApi = {
   },
 
   mlVsRules: async (params?: { mode?: string }, signal?: AbortSignal) => {
-    const r = await http.get<MlVsRulesResponse>("/exchange/performance/ml-vs-rules", {
-      params: { mode: params?.mode ?? "live" },
-      signal,
-    });
+    const r = await http.get<MlVsRulesResponse>(
+      "/exchange/performance/ml-vs-rules",
+      {
+        params: { mode: params?.mode ?? "live" },
+        signal,
+      },
+    );
     return r.data;
   },
 

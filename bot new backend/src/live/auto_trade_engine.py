@@ -245,7 +245,7 @@ class AutoTradeEngine:
                 else None
             ),
             reason=(decision.reason or "")[:20000],
-            signals_json=_dump_signals_json(decision.signals),
+            signals_json=self._dump_signals_json(decision.signals),
             executed=executed,
             order_id=local_order_id,
         )
@@ -1008,6 +1008,28 @@ class AutoTradeEngine:
             ml_changed_final_action = False
             ml_out: Optional[TradeSignal] = None
 
+            # Exact-match enforcement: if required, treat generic fallback as unavailable
+            exact_match_required = bool(
+                getattr(self.settings, "ml_require_exact_symbol_match", True)
+            )
+            exact_match_downgraded = False
+            if (
+                self.ml_enabled
+                and exact_match_required
+                and ml_context.get("model_exists")
+                and not ml_context.get("specific_match")
+            ):
+                ml_context["model_exists"] = False
+                exact_match_downgraded = True
+                decision.signals["ml_load_error"] = "exact_model_match_required"
+                self._log_event(
+                    "WARN",
+                    "ml",
+                    f"ML exact-match required but resolved dir does not match "
+                    f"{ml_context.get('model_key')} — treating as unavailable",
+                    symbol=symbol,
+                )
+
             self.ml_infer = None
             if self.ml_enabled:
                 try:
@@ -1016,7 +1038,9 @@ class AutoTradeEngine:
 
                         self.ml_infer = get_infer(str(ml_context["model_dir"]))
                     else:
-                        decision.signals["ml_load_error"] = "model_not_found"
+                        decision.signals["ml_load_error"] = (
+                            decision.signals.get("ml_load_error") or "model_not_found"
+                        )
                 except Exception as e:
                     decision.signals["ml_load_error"] = str(e)
                     self.ml_infer = None
@@ -1090,7 +1114,7 @@ class AutoTradeEngine:
                 )
 
             ml_strict = bool(getattr(self.settings, "ml_strict", False))
-            if ml_strict and self.ml_enabled:
+            if ml_strict and self.ml_enabled and not exact_match_downgraded:
                 if not ml_context.get("model_exists"):
                     decision.signals["ml_load_error"] = (
                         decision.signals.get("ml_load_error") or "model_not_found"

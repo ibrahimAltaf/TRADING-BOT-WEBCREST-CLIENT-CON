@@ -358,6 +358,47 @@ def model_health(load_model: bool = True, smoke: bool = False) -> Dict[str, Any]
     return out
 
 
+@router.get("/model-health/symbols")
+def model_health_per_symbol() -> Dict[str, Any]:
+    """Per-symbol ML readiness for all configured trading symbols."""
+    s = get_settings()
+    if not getattr(s, "ml_enabled", False):
+        return {
+            "ok": True,
+            "ml_enabled": False,
+            "symbols": {},
+            "note": "ML disabled (ML_ENABLED=false)",
+        }
+
+    import os as _os
+    from src.ml.runtime_check import validate_all_symbols_ml_runtime
+
+    version = _os.getenv("ML_MODEL_VERSION", "").strip() or None
+    require_exact = bool(getattr(s, "ml_require_exact_symbol_match", True))
+    symbols = list(getattr(s, "supported_trading_symbols", (s.trade_symbol,)))
+    timeframe = s.trade_timeframe
+
+    results = validate_all_symbols_ml_runtime(
+        symbols=symbols,
+        timeframe=timeframe,
+        base_model_dir=s.ml_model_dir,
+        version=version,
+        require_exact_match=require_exact,
+        load_model=True,
+    )
+
+    all_ready = all(r["ready"] for r in results.values())
+
+    return {
+        "ok": True,
+        "ml_enabled": True,
+        "ml_require_exact_symbol_match": require_exact,
+        "timeframe": timeframe,
+        "all_symbols_ready": all_ready,
+        "symbols": results,
+    }
+
+
 @router.get("/runtime-paths")
 def runtime_paths() -> Dict[str, Any]:
     """Which strategy engine + scheduler + symbols are active."""
