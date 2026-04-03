@@ -252,7 +252,7 @@ class AutoTradeEngine:
                 else None
             ),
             reason=(decision.reason or "")[:20000],
-            signals_json=_dump_signals_json(decision.signals),
+            signals_json=self._dump_signals_json(decision.signals),
             executed=executed,
             order_id=local_order_id,
         )
@@ -1180,6 +1180,28 @@ class AutoTradeEngine:
                 and runtime_eligible
                 and getattr(self.settings, "ml_strict", True)
             )
+
+            # Exact-match enforcement: if required, treat generic fallback as unavailable
+            exact_match_required = bool(
+                getattr(self.settings, "ml_require_exact_symbol_match", True)
+            )
+            exact_match_downgraded = False
+            if (
+                self.ml_enabled
+                and exact_match_required
+                and ml_context.get("model_exists")
+                and not ml_context.get("specific_match")
+            ):
+                ml_context["model_exists"] = False
+                exact_match_downgraded = True
+                decision.signals["ml_load_error"] = "exact_model_match_required"
+                self._log_event(
+                    "WARN",
+                    "ml",
+                    f"ML exact-match required but resolved dir does not match "
+                    f"{ml_context.get('model_key')} — treating as unavailable",
+                    symbol=symbol,
+                )
 
             self.ml_infer = None
 

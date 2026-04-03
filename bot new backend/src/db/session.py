@@ -6,12 +6,20 @@ from src.db.base import Base
 
 settings = get_settings()
 
-engine = create_engine(
-    settings.database_url,
-    pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
-)
+_db_url = settings.database_url
+if _db_url.startswith("sqlite"):
+    engine = create_engine(
+        _db_url,
+        connect_args={"check_same_thread": False},
+        pool_pre_ping=True,
+    )
+else:
+    engine = create_engine(
+        _db_url,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
+    )
 
 SessionLocal = sessionmaker(
     autocommit=False,

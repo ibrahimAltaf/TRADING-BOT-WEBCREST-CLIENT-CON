@@ -44,7 +44,8 @@ const keys = {
   healthDb: () => [...keys.all, "healthDb"] as const,
   balances: () => [...keys.all, "balances"] as const,
   balanceAsset: (asset: string) => [...keys.all, "balance", asset] as const,
-  positionsOpen: () => [...keys.all, "positionsOpen"] as const,
+  positionsOpen: (symbol?: string) =>
+    [...keys.all, "positionsOpen", symbol] as const,
   positionsHistory: (params?: { symbol?: string }) =>
     [...keys.all, "positionsHistory", params] as const,
   decisionsRecent: (params?: { symbol?: string; limit?: number }) =>
@@ -77,16 +78,15 @@ const keys = {
     [...keys.all, "mlVsRules", mode ?? "live"] as const,
   tradeEvaluation: (mode?: string) =>
     [...keys.all, "tradeEvaluation", mode ?? "live"] as const,
-  proof: (symbol?: string) => [...keys.all, "proof", symbol ?? "BTCUSDT"] as const,
+  proof: (symbol?: string) =>
+    [...keys.all, "proof", symbol ?? "BTCUSDT"] as const,
 };
 
 const statsRoot = ["stats"] as const;
 const statsKeys = {
   all: statsRoot,
-  liveProof: (limit: number) =>
-    [...statsRoot, "liveProof", limit] as const,
-  mlAnalysis: (limit: number) =>
-    [...statsRoot, "mlAnalysis", limit] as const,
+  liveProof: (limit: number) => [...statsRoot, "liveProof", limit] as const,
+  mlAnalysis: (limit: number) => [...statsRoot, "mlAnalysis", limit] as const,
 };
 
 export function useStatusQuery(
@@ -132,6 +132,7 @@ export function useBalancesQuery(
 }
 
 export function usePositionsOpenQuery(
+  symbol?: string,
   options?: UseQueryOptions<
     unknown,
     Error,
@@ -139,9 +140,9 @@ export function usePositionsOpenQuery(
   >,
 ) {
   return useQuery({
-    queryKey: keys.positionsOpen(),
+    queryKey: keys.positionsOpen(symbol),
     queryFn: async () => {
-      const data = await exchangeApi.positionsOpen();
+      const data = await exchangeApi.positionsOpen(symbol);
       const positions = (data as any)?.positions ?? [];
       return {
         ...data,

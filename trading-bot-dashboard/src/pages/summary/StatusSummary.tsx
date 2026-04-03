@@ -95,7 +95,8 @@ export default function StatusSummary() {
     ] as const;
 
     // Sequential checks: avoids nginx/worker stampede during long client audits (100h+).
-    const results: Array<{ endpoint: string; ok: boolean; detail: string }> = [];
+    const results: Array<{ endpoint: string; ok: boolean; detail: string }> =
+      [];
     for (const endpoint of endpoints) {
       try {
         const res = await http.get(endpoint);
@@ -229,7 +230,11 @@ export default function StatusSummary() {
               mono
             />
 
-            <InfoCard label="Environment" value={startupData?.env || "—"} mono />
+            <InfoCard
+              label="Environment"
+              value={startupData?.env || "—"}
+              mono
+            />
 
             <InfoCard
               label="Testnet Mode"
@@ -244,7 +249,11 @@ export default function StatusSummary() {
 
             <InfoCard
               label="Exchange Base URL"
-              value={startupData?.binance_spot_base_url || data.binance_spot_base_url || "—"}
+              value={
+                startupData?.binance_spot_base_url ||
+                data.binance_spot_base_url ||
+                "—"
+              }
               mono
             />
 
@@ -260,9 +269,7 @@ export default function StatusSummary() {
             <InfoCard
               label="Model Loaded"
               value={
-                <span
-                  className={statusBadge(data.model_loaded)}
-                >
+                <span className={statusBadge(data.model_loaded)}>
                   {data.model_loaded ? "Loaded" : "Not Loaded"}
                 </span>
               }
@@ -271,9 +278,7 @@ export default function StatusSummary() {
             <InfoCard
               label="Database"
               value={
-                <span
-                  className={statusBadge(data.database_connected)}
-                >
+                <span className={statusBadge(data.database_connected)}>
                   {data.database_connected ? "Connected" : "Disconnected"}
                 </span>
               }
@@ -282,9 +287,7 @@ export default function StatusSummary() {
             <InfoCard
               label="Exchange"
               value={
-                <span
-                  className={statusBadge(data.exchange_connected)}
-                >
+                <span className={statusBadge(data.exchange_connected)}>
                   {data.exchange_connected ? "Connected" : "Disconnected"}
                 </span>
               }
@@ -304,9 +307,13 @@ export default function StatusSummary() {
               label="Dashboard Reachability"
               value={
                 <span
-                  className={statusBadge(Boolean(startupData?.dashboard_connected))}
+                  className={statusBadge(
+                    Boolean(startupData?.dashboard_connected),
+                  )}
                 >
-                  {startupData?.dashboard_connected ? "Reachable" : "Unavailable"}
+                  {startupData?.dashboard_connected
+                    ? "Reachable"
+                    : "Unavailable"}
                 </span>
               }
             />
@@ -391,7 +398,9 @@ export default function StatusSummary() {
             <table className="min-w-full bg-white text-sm">
               <thead className="bg-slate-50 text-slate-600">
                 <tr>
-                  <th className="px-3 py-2 text-left font-semibold">Endpoint</th>
+                  <th className="px-3 py-2 text-left font-semibold">
+                    Endpoint
+                  </th>
                   <th className="px-3 py-2 text-left font-semibold">Status</th>
                   <th className="px-3 py-2 text-left font-semibold">Detail</th>
                 </tr>

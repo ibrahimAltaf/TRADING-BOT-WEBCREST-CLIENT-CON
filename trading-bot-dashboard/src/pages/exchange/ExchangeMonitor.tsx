@@ -57,7 +57,7 @@ export default function ExchangeMonitor() {
   const modelHealth = useModelHealthSymbolsQuery(false);
   const allOrders = useAllOrdersQuery(symbol, 50);
   const trades = useTradesQuery({ symbol, limit: 50 });
-  const positions = usePositionsOpenQuery();
+  const positions = usePositionsOpenQuery(symbol);
   const performanceSummary = usePerformanceSummaryQuery("live");
   const proof = useProofQuery(symbol);
 
