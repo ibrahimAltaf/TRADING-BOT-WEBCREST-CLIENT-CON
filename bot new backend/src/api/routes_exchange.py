@@ -801,7 +801,7 @@ def get_position_history(
     )
 
     if symbol:
-        query = query.filter(Position.symbol == symbol)
+        query = query.filter(Position.symbol == symbol.strip().upper())
 
     positions = query.order_by(Position.exit_ts.desc()).limit(limit).all()
 
