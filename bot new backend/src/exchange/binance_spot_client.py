@@ -75,6 +75,10 @@ class BinanceSpotClient:
         self.api_key = s.binance_api_key
         self.api_secret = s.binance_api_secret
         self._base_urls = self._build_base_urls(s.binance_testnet)
+        # Binance signed requests require ms timestamp within recvWindow of server time.
+        # Offset = serverTime - localTime fixes -1021 when the OS clock is skewed.
+        self._time_offset_ms: int = 0
+        self._time_sync_attempted: bool = False
 
     def _build_base_urls(self, is_testnet: bool) -> list[str]:
         urls: list[str] = [self.base_url]
@@ -104,6 +108,19 @@ class BinanceSpotClient:
             sha256,
         ).hexdigest()
 
+    def _server_time_ms(self) -> int:
+        return int(time.time() * 1000) + self._time_offset_ms
+
+    def _refresh_time_offset(self, base_url: str) -> None:
+        """Set ``_time_offset_ms`` from ``GET /api/v3/time`` (fixes error -1021)."""
+        url = f"{base_url.rstrip('/')}/api/v3/time"
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        server_ms = int(data["serverTime"])
+        local_ms = int(time.time() * 1000)
+        self._time_offset_ms = server_ms - local_ms
+
     def _request(
         self,
         method: str,
@@ -117,35 +134,66 @@ class BinanceSpotClient:
         last_network_error: Optional[Exception] = None
 
         for base_url in self._base_urls:
-            req_params = dict(params)
-            if signed:
-                req_params["timestamp"] = int(time.time() * 1000)
-                query = urlencode(req_params, doseq=True)
-                req_params["signature"] = self._sign(query)
-
+            last_network_error = None
             url = f"{base_url}{path}"
-            try:
-                r = requests.request(
-                    method,
-                    url,
-                    params=req_params,
-                    headers=headers,
-                    timeout=20,
-                )
-            except requests.RequestException as exc:
-                last_network_error = exc
+
+            max_attempts = 3 if signed else 1
+            for attempt in range(max_attempts):
+                req_params = dict(params)
+                if signed:
+                    if not self._time_sync_attempted:
+                        try:
+                            self._refresh_time_offset(base_url)
+                        except Exception:
+                            self._time_offset_ms = 0
+                        self._time_sync_attempted = True
+                    elif attempt > 0:
+                        try:
+                            self._refresh_time_offset(base_url)
+                        except Exception:
+                            pass
+                    req_params["timestamp"] = self._server_time_ms()
+                    req_params["recvWindow"] = 60000
+                    query = urlencode(req_params, doseq=True)
+                    req_params["signature"] = self._sign(query)
+
+                try:
+                    r = requests.request(
+                        method,
+                        url,
+                        params=req_params,
+                        headers=headers,
+                        timeout=20,
+                    )
+                except requests.RequestException as exc:
+                    last_network_error = exc
+                    break
+
+                if r.status_code < 400:
+                    if self.base_url != base_url:
+                        self.base_url = base_url
+                        self._base_urls = [base_url] + [
+                            u for u in self._base_urls if u != base_url
+                        ]
+                    return r.json()
+
+                err_text = r.text
+                retry_ts = False
+                if signed and attempt < max_attempts - 1:
+                    try:
+                        code = r.json().get("code")
+                        if code == -1021:
+                            retry_ts = True
+                    except Exception:
+                        if "-1021" in err_text or "Timestamp" in err_text:
+                            retry_ts = True
+                    if retry_ts:
+                        continue
+
+                raise RuntimeError(f"Binance error {r.status_code}: {err_text}")
+
+            if last_network_error is not None:
                 continue
-
-            if r.status_code >= 400:
-                raise RuntimeError(f"Binance error {r.status_code}: {r.text}")
-
-            # Sticky on first successful endpoint for subsequent calls in this process.
-            if self.base_url != base_url:
-                self.base_url = base_url
-                self._base_urls = [base_url] + [
-                    u for u in self._base_urls if u != base_url
-                ]
-            return r.json()
 
         tried = ", ".join(self._base_urls)
         if last_network_error is not None:

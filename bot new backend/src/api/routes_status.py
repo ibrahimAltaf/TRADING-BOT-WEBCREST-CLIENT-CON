@@ -573,9 +573,16 @@ def ai_observability_metrics(
 
             rs = str(sig.get("rule_signal") or cd.get("rule_signal") or "?")
             ms = sig.get("ml_signal")
+            if ms is None:
+                pred = sig.get("ml_prediction")
+                if isinstance(pred, dict) and pred.get("signal") is not None:
+                    ms = pred.get("signal")
             if ms is not None:
                 ml_signal_present += 1
-            if sig.get("ml_confidence") is not None or cd.get("ml_confidence") is not None:
+            conf_any = sig.get("ml_confidence")
+            if conf_any is None and isinstance(sig.get("ml_prediction"), dict):
+                conf_any = sig["ml_prediction"].get("confidence")
+            if conf_any is not None or cd.get("ml_confidence") is not None:
                 ml_confidence_present += 1
 
             fin = str(sig.get("combined_signal") or r.action or "?")
