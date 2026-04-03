@@ -81,14 +81,16 @@ export default function StatusSummary() {
       "/status/summary",
       "/status/startup-check",
       "/status/model-health",
+      "/status/model-health/symbols",
       "/status/runtime-paths",
+      "/exchange/performance/ai-observability?symbol=BTCUSDT&limit=500",
       "/exchange/decisions/latest?symbol=BTCUSDT",
       "/exchange/decisions/recent?symbol=BTCUSDT&limit=20",
       "/exchange/balances",
       "/exchange/positions/open",
       "/exchange/positions/history?symbol=BTCUSDT&limit=20",
       "/exchange/orders/open?symbol=BTCUSDT",
-      "/exchange/logs/recent?limit=50",
+      "/exchange/logs/recent?symbol=BTCUSDT&limit=50",
       "/exchange/proof?symbol=BTCUSDT",
     ] as const;
 

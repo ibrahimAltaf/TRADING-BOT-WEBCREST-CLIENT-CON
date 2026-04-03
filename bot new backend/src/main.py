@@ -115,17 +115,18 @@ def _startup_ml_model_check() -> None:
                 timeframe=s.trade_timeframe,
                 version=os.getenv("ML_MODEL_VERSION", "").strip() or None,
             )
-            exists = bool(ctx.get("model_exists"))
+            re_ok = bool(ctx.get("runtime_eligible"))
             art = check_model_artifacts(Path(ctx.get("model_dir", s.ml_model_dir)))
             print(
                 f"[STARTUP][ML] symbol={sym} resolved_dir={ctx.get('model_dir')} "
-                f"model_exists={exists} specific_match={ctx.get('specific_match')}"
+                f"runtime_eligible={re_ok} exact_match_exists={ctx.get('exact_match_exists')} "
+                f"artifact_exists={ctx.get('artifact_exists')}"
             )
             print(
                 f"[STARTUP][ML] symbol={sym} artifacts model_keras={art['model_keras']} "
                 f"scaler_json={art['scaler_json']} meta_json={art['meta_json']}"
             )
-            if not exists or not art.get("all_present"):
+            if not re_ok or not art.get("all_present"):
                 all_ok = False
                 print(
                     f"[STARTUP][ML][ERROR] symbol={sym} missing model artifacts — "

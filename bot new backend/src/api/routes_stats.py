@@ -24,7 +24,7 @@ def _parse_signals(raw: Optional[str]) -> Dict[str, Any]:
         return {}
 
 
-# Final outcomes where ML shaped the fused signal (not plain rule-only).
+# Final outcomes where ML influenced the fused signal (not plain rule-only).
 _ML_INFLUENT_SOURCES = frozenset(
     {
         "ml_prioritize",

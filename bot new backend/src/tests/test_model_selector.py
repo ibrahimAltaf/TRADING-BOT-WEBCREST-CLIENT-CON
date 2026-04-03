@@ -3,15 +3,19 @@ from pathlib import Path
 from src.ml.model_selector import resolve_model_selection
 
 
-def _touch_model_files(model_dir: Path) -> None:
+def _touch_artifacts(model_dir: Path) -> None:
     model_dir.mkdir(parents=True, exist_ok=True)
-    (model_dir / "model.keras").write_text("x")
+    (model_dir / "model.keras").write_bytes(b"x")
+    (model_dir / "scaler.json").write_text('{"mean":[0.0,0.0],"scale":[1.0,1.0]}')
+    (model_dir / "meta.json").write_text(
+        '{"lookback":2,"n_features":2,"feature_columns":["a","b"]}'
+    )
 
 
-def test_selects_symbol_timeframe_specific_model(tmp_path: Path):
+def test_exact_symbol_timeframe_model_resolves(tmp_path: Path):
     base = tmp_path / "models" / "lstm_v1"
     specific = base / "BTCUSDT_1h"
-    _touch_model_files(specific)
+    _touch_artifacts(specific)
 
     resolved = resolve_model_selection(
         base_model_dir=str(base),
@@ -20,14 +24,18 @@ def test_selects_symbol_timeframe_specific_model(tmp_path: Path):
         version=None,
     )
 
-    assert resolved["model_exists"] is True
-    assert resolved["specific_match"] is True
+    assert resolved["exact_match_exists"] is True
+    assert resolved["fallback_used"] is False
+    assert resolved["artifact_exists"] is True
+    assert resolved["runtime_eligible"] is True
+    assert resolved["reason"] == "ok"
     assert resolved["model_name"] == "BTCUSDT_1h"
 
 
-def test_falls_back_to_version_base_model(tmp_path: Path):
+def test_no_permissive_fallback_when_exact_missing(tmp_path: Path):
     base = tmp_path / "models" / "lstm_v1"
-    _touch_model_files(base)
+    other = base / "BTCUSDT_1h"
+    _touch_artifacts(other)
 
     resolved = resolve_model_selection(
         base_model_dir=str(base),
@@ -36,14 +44,16 @@ def test_falls_back_to_version_base_model(tmp_path: Path):
         version=None,
     )
 
-    assert resolved["model_exists"] is True
-    assert resolved["specific_match"] is False
-    assert resolved["model_name"] == "lstm_v1"
+    assert resolved["exact_match_exists"] is False
+    assert resolved["fallback_used"] is False
+    assert resolved["runtime_eligible"] is False
+    assert resolved["artifact_exists"] is False
 
 
 def test_version_override_prefers_repo_models_folder(tmp_path: Path, monkeypatch):
     base = tmp_path / "models" / "lstm_v1"
-    _touch_model_files(base)
+    other = base / "BTCUSDT_1h"
+    _touch_artifacts(other)
 
     repo_root = tmp_path / "repo"
     module_file = repo_root / "src" / "ml" / "model_selector.py"
@@ -51,9 +61,8 @@ def test_version_override_prefers_repo_models_folder(tmp_path: Path, monkeypatch
     module_file.write_text("# test module path")
 
     version_specific = repo_root / "models" / "lstm_v2" / "ETHUSDT_1h"
-    _touch_model_files(version_specific)
+    _touch_artifacts(version_specific)
 
-    # Force model_selector._repo_root() to point to our temp repo root.
     monkeypatch.setattr(
         "src.ml.model_selector._repo_root",
         lambda: repo_root,
@@ -68,5 +77,5 @@ def test_version_override_prefers_repo_models_folder(tmp_path: Path, monkeypatch
 
     assert resolved["model_version"] == "lstm_v2"
     assert resolved["model_name"] == "ETHUSDT_1h"
-    assert resolved["specific_match"] is True
-    assert resolved["model_exists"] is True
+    assert resolved["exact_match_exists"] is True
+    assert resolved["runtime_eligible"] is True

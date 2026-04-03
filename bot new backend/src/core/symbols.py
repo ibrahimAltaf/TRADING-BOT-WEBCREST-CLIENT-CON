@@ -1,7 +1,8 @@
 """
 Multi-coin trading: canonical Binance spot symbols and display labels.
 
-SUPPORTED_SYMBOLS (display) maps to directories like models/btc_usdt_5m/ via model_selector.
+Model directories must match ``<BINANCE_SYMBOL>_<timeframe>`` (e.g. ``BTCUSDT_5m``) under
+``ML_MODEL_DIR`` — see ``src.ml.model_selector.resolve_model_selection``.
 """
 from __future__ import annotations
 

@@ -10,14 +10,43 @@ from typing import Any, Dict, List, Optional, Tuple
 import math
 
 
+class RuntimeMode(str, Enum):
+    """High-level ML execution posture for the cycle."""
+
+    AI_ACTIVE = "ai_active"
+    AI_DEGRADED = "ai_degraded"
+    AI_DISABLED_BY_CONFIG = "ai_disabled_by_config"
+    AI_UNAVAILABLE = "ai_unavailable"
+
+
 class HoldKind(str, Enum):
-    NONE = "NONE"
-    MARKET = "HOLD_MARKET"
-    RISK = "HOLD_RISK"
-    ML_FAIL = "HOLD_ML_FAIL"
-    ERROR = "HOLD_ERROR"
-    GATE = "HOLD_GATE"
-    EXECUTION = "HOLD_EXECUTION"
+    """HOLD must never be silent — always typed + reasons."""
+
+    NONE = "none"
+    MARKET_HOLD = "market_hold"
+    SAFETY_HOLD = "safety_hold"
+    FALLBACK_HOLD = "fallback_hold"
+    RUNTIME_HOLD = "runtime_hold"
+    BLOCKED_EXECUTION_HOLD = "blocked_execution_hold"
+
+
+def resolve_runtime_mode(
+    *,
+    ml_enabled: bool,
+    runtime_eligible: bool,
+    model_loaded: bool,
+    ml_signal_present: bool,
+    ml_error: Optional[str],
+) -> RuntimeMode:
+    if not ml_enabled:
+        return RuntimeMode.AI_DISABLED_BY_CONFIG
+    if not runtime_eligible:
+        return RuntimeMode.AI_UNAVAILABLE
+    if ml_error or not model_loaded:
+        return RuntimeMode.AI_DEGRADED
+    if not ml_signal_present:
+        return RuntimeMode.AI_DEGRADED
+    return RuntimeMode.AI_ACTIVE
 
 
 def fuse_confidence(
@@ -35,7 +64,6 @@ def fuse_confidence(
     if agree:
         out = min(1.0, 0.6 * rc + 0.4 * mc + 0.1)
     else:
-        # Disagreement: weight ML higher when softmax is moderate+ (≥0.6)
         if mc >= 0.6:
             out = 0.35 * rc + 0.65 * mc
         else:
@@ -58,7 +86,6 @@ def evaluate_entry_gates(
     risk_ok: bool = True,
 ) -> Dict[str, Any]:
     """Transparent gate booleans + which failed (for HOLD diagnostics)."""
-    # Relaxed vs strict trend: more cycles pass gates so ML-driven trades are not blocked
     trend_ok = bool(adx >= adx_threshold * 0.65) or (ema_fast != ema_slow)
     momentum_ok = (
         (rsi_buy_min - 5) <= rsi <= (rsi_buy_max + 5)
@@ -84,6 +111,8 @@ def classify_hold(
     ml_error: Optional[str],
     model_loaded: bool,
     ml_enabled: bool,
+    runtime_eligible: bool,
+    runtime_mode: RuntimeMode,
     execution_blocked_reason: Optional[str],
     cooldown: bool,
 ) -> Tuple[HoldKind, List[str]]:
@@ -92,22 +121,27 @@ def classify_hold(
         return HoldKind.NONE, []
 
     if cooldown:
-        return HoldKind.RISK, ["cooldown_active"]
-    if ml_enabled and not model_loaded:
-        return HoldKind.ML_FAIL, ["model_not_loaded_or_missing"]
+        return HoldKind.SAFETY_HOLD, ["cooldown_active"]
+    if ml_enabled and not runtime_eligible:
+        return HoldKind.RUNTIME_HOLD, ["runtime_not_eligible_exact_model_or_artifacts"]
+    if ml_enabled and runtime_eligible and not model_loaded:
+        return HoldKind.RUNTIME_HOLD, ["model_not_loaded_or_missing"]
     if ml_error:
-        return HoldKind.ML_FAIL, [f"ml_error:{ml_error[:200]}"]
+        return HoldKind.RUNTIME_HOLD, [f"ml_error:{ml_error[:200]}"]
     if execution_blocked_reason:
-        return HoldKind.EXECUTION, [execution_blocked_reason]
+        return HoldKind.BLOCKED_EXECUTION_HOLD, [execution_blocked_reason]
     if gate_failed:
-        return HoldKind.GATE, [f"gate:{g}" for g in gate_failed]
-    return HoldKind.MARKET, ["no_rule_or_ml_trade_signal_this_bar"]
+        return HoldKind.MARKET_HOLD, [f"gate:{g}" for g in gate_failed]
+    if not ml_enabled:
+        return HoldKind.FALLBACK_HOLD, ["ml_disabled_rule_only_hold"]
+    return HoldKind.MARKET_HOLD, ["no_rule_or_ml_trade_signal_this_bar"]
 
 
 @dataclass
 class CycleEnvelope:
     symbol: str
     timeframe: str
+    runtime_mode: str
     rule_signal: str
     rule_confidence: float
     ml_signal: Optional[str]
@@ -129,6 +163,7 @@ class CycleEnvelope:
         return {
             "symbol": self.symbol,
             "timeframe": self.timeframe,
+            "runtime_mode": self.runtime_mode,
             "rule_signal": self.rule_signal,
             "rule_confidence": self.rule_confidence,
             "ml_signal": self.ml_signal,
@@ -152,6 +187,7 @@ def build_envelope_from_engine_state(
     *,
     symbol: str,
     timeframe: str,
+    runtime_mode: str,
     rule_signal: str,
     rule_confidence: float,
     ml_signal: Optional[str],
@@ -165,6 +201,7 @@ def build_envelope_from_engine_state(
     gate_eval: Dict[str, Any],
     ml_error: Optional[str],
     ml_enabled: bool,
+    runtime_eligible: bool,
     cooldown_blocked: bool,
     execution_block_reason: Optional[str] = None,
 ) -> CycleEnvelope:
@@ -182,6 +219,11 @@ def build_envelope_from_engine_state(
     else:
         fc = combined_conf
 
+    try:
+        rm = RuntimeMode(runtime_mode)
+    except ValueError:
+        rm = RuntimeMode.AI_UNAVAILABLE
+
     failed_gates = list(gate_eval.get("failed_gates") or [])
     hold_kind, hold_reasons = classify_hold(
         final_action=final_action,
@@ -189,16 +231,19 @@ def build_envelope_from_engine_state(
         ml_error=ml_error,
         model_loaded=model_loaded,
         ml_enabled=ml_enabled,
+        runtime_eligible=runtime_eligible,
+        runtime_mode=rm,
         execution_blocked_reason=execution_block_reason,
         cooldown=cooldown_blocked,
     )
     block = list(hold_reasons)
-    if final_action == "HOLD" and hold_kind == HoldKind.MARKET:
+    if final_action == "HOLD" and hold_kind == HoldKind.MARKET_HOLD:
         block = hold_reasons + ["see_override_reason_and_strategy_reason"]
 
     return CycleEnvelope(
         symbol=symbol,
         timeframe=timeframe,
+        runtime_mode=runtime_mode,
         rule_signal=rule_signal,
         rule_confidence=round(rule_confidence, 4),
         ml_signal=ml_signal,

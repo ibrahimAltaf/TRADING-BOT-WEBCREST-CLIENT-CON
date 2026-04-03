@@ -17,11 +17,14 @@ import {
   exchangeApi,
   type AutoTradeIn,
   type AutoTradeResponse,
+  type AiObservabilityResponse,
+  type EventLog,
   type ExchangeBalanceResponse,
   type ExchangeDecisionsRecentResponse,
   type ExchangeDecisionLatestResponse,
   type ExchangeLogsRecentResponse,
   type ExchangeProofResponse,
+  type ModelHealthSymbolsResponse,
   type ExchangeOpenPositionsResponse,
   type ExchangePositionsHistoryResponse,
   type ExchangeTradesResponse,
@@ -48,8 +51,15 @@ const keys = {
     [...keys.all, "decisionsRecent", params] as const,
   decisionLatest: (symbol: string) =>
     [...keys.all, "decisionLatest", symbol] as const,
-  logsRecent: (params?: { limit?: number }) =>
-    [...keys.all, "logsRecent", params] as const,
+  logsRecent: (params?: {
+    limit?: number;
+    symbol?: string;
+    all_symbols?: boolean;
+  }) => [...keys.all, "logsRecent", params] as const,
+  aiObservability: (params?: { limit?: number; symbol?: string }) =>
+    [...keys.all, "aiObservability", params] as const,
+  modelHealthSymbols: (loadModel?: boolean) =>
+    [...keys.all, "modelHealthSymbols", loadModel ?? false] as const,
   openOrders: (symbol: string) => [...keys.all, "openOrders", symbol] as const,
   allOrders: (symbol: string, limit?: number) =>
     [...keys.all, "allOrders", symbol, limit] as const,
@@ -175,11 +185,15 @@ export function useDecisionLatestQuery(
 }
 
 export function useLogsRecentQuery(
-  params: { limit?: number } = {},
+  params: {
+    limit?: number;
+    symbol?: string;
+    all_symbols?: boolean;
+  } = {},
   options?: UseQueryOptions<
     unknown,
     Error,
-    ExchangeLogsRecentResponse & { items?: any[] }
+    ExchangeLogsRecentResponse & { items?: EventLog[] }
   >,
 ) {
   return useQuery({
@@ -191,7 +205,34 @@ export function useLogsRecentQuery(
         : ((data as any)?.items ?? []);
       return { ...data, logs: items, items };
     },
+    staleTime: 5_000,
     refetchInterval: 10_000,
+    ...options,
+  });
+}
+
+export function useAiObservabilityQuery(
+  params: { limit?: number; symbol?: string } = {},
+  options?: UseQueryOptions<unknown, Error, AiObservabilityResponse>,
+) {
+  return useQuery({
+    queryKey: keys.aiObservability(params),
+    queryFn: () => exchangeApi.aiObservability(params),
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+    ...options,
+  });
+}
+
+export function useModelHealthSymbolsQuery(
+  loadModel = false,
+  options?: UseQueryOptions<unknown, Error, ModelHealthSymbolsResponse>,
+) {
+  return useQuery({
+    queryKey: keys.modelHealthSymbols(loadModel),
+    queryFn: () => exchangeApi.modelHealthSymbols({ load_model: loadModel }),
+    staleTime: 15_000,
+    refetchInterval: 45_000,
     ...options,
   });
 }

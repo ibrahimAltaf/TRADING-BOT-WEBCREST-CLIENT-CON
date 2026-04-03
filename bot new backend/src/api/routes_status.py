@@ -37,12 +37,20 @@ def _signals_dict(decision: Optional[TradingDecisionLog]) -> Dict[str, Any]:
 
 def _decision_source(signals: Dict[str, Any]) -> str:
     final_source = str(signals.get("final_source") or "").lower()
-    if final_source in ("rule_only", "rule_only_ml_disabled"):
+    if final_source in ("rule_only", "rule_only_ml_disabled", "rule_based"):
         return "rule_only"
     if final_source == "combined":
         return "combined"
-    if final_source == "ml_override":
+    if final_source in (
+        "ml_override",
+        "ml_prioritize",
+        "ml_hold_breakout",
+        "ml_moderate_influence",
+        "ml_rule_conflict_hold",
+    ):
         return "ml_override"
+    if final_source == "ml_strict_failure":
+        return "ml_strict_failure"
     return "other"
 
 
@@ -401,6 +409,7 @@ def get_ml_vs_rules_comparison(mode: str = "live") -> Dict[str, Any]:
             "rule_only": [],
             "combined": [],
             "ml_override": [],
+            "ml_strict_failure": [],
             "other": [],
         }
         for row in trade_rows:
@@ -489,6 +498,166 @@ def export_trade_evaluation(mode: str = "live") -> Dict[str, Any]:
         db.close()
         raise HTTPException(
             status_code=500, detail=f"Trade evaluation export failed: {e!s}"
+        )
+    finally:
+        db.close()
+
+
+def _shannon_entropy(counts: Dict[str, int]) -> float:
+    """Bits of entropy over a discrete distribution (diversity signal)."""
+    total = sum(counts.values())
+    if total <= 0:
+        return 0.0
+    h = 0.0
+    for c in counts.values():
+        if c <= 0:
+            continue
+        p = c / total
+        h -= p * math.log(p, 2)
+    return round(h, 4)
+
+
+@router.get("/ai-observability")
+def ai_observability_metrics(
+    limit: int = 5000,
+    symbol: Optional[str] = None,
+) -> Dict[str, Any]:
+    """ML usage, runtime posture, and decision diversity from recent ``signals_json`` rows."""
+    from collections import Counter
+
+    lim = max(1, min(int(limit), 20000))
+    db = SessionLocal()
+    try:
+        q = db.query(TradingDecisionLog).order_by(TradingDecisionLog.ts.desc())
+        if symbol:
+            q = q.filter(TradingDecisionLog.symbol == symbol.strip().upper())
+        rows = q.limit(lim).all()
+
+        runtime_mode_c: Counter[str] = Counter()
+        hold_kind_c: Counter[str] = Counter()
+        final_source_c: Counter[str] = Counter()
+        triple_c: Counter[str] = Counter()
+
+        ml_signal_present = 0
+        ml_confidence_present = 0
+        degraded_cycles = 0
+        strict_failure_cycles = 0
+
+        for r in rows:
+            sig = _signals_dict(r)
+            cd = sig.get("cycle_debug") if isinstance(sig.get("cycle_debug"), dict) else {}
+            env = (
+                sig.get("cycle_envelope")
+                if isinstance(sig.get("cycle_envelope"), dict)
+                else {}
+            )
+
+            rm = str(
+                cd.get("runtime_mode")
+                or env.get("runtime_mode")
+                or "unknown"
+            ).lower()
+            runtime_mode_c[rm] += 1
+
+            hk = str(cd.get("hold_kind") or env.get("hold_kind") or "").lower()
+            if hk:
+                hold_kind_c[hk] += 1
+
+            fs = str(sig.get("final_source") or "unknown").lower()
+            final_source_c[fs] += 1
+            if fs == "ml_strict_failure":
+                strict_failure_cycles += 1
+
+            if rm in ("ai_degraded", "ai_unavailable"):
+                degraded_cycles += 1
+
+            rs = str(sig.get("rule_signal") or cd.get("rule_signal") or "?")
+            ms = sig.get("ml_signal")
+            if ms is not None:
+                ml_signal_present += 1
+            if sig.get("ml_confidence") is not None or cd.get("ml_confidence") is not None:
+                ml_confidence_present += 1
+
+            fin = str(sig.get("combined_signal") or r.action or "?")
+            ms_key = str(ms) if ms is not None else "none"
+            triple_c[f"{rs}|{ms_key}|{fin}"] += 1
+
+        n = len(rows) or 1
+        return {
+            "ok": True,
+            "sample_size": len(rows),
+            "symbol_filter": symbol.strip().upper() if symbol else None,
+            "ml_usage": {
+                "cycles_with_ml_signal_field": ml_signal_present,
+                "cycles_with_ml_confidence": ml_confidence_present,
+                "pct_with_ml_signal": round(100.0 * ml_signal_present / n, 2),
+                "pct_with_ml_confidence": round(100.0 * ml_confidence_present / n, 2),
+            },
+            "runtime_posture": {
+                "counts_by_runtime_mode": dict(runtime_mode_c),
+                "degraded_or_unavailable_cycles": degraded_cycles,
+                "ml_strict_failure_cycles": strict_failure_cycles,
+            },
+            "decision_diversity": {
+                "distinct_rule_ml_final_patterns": len(triple_c),
+                "pattern_top": dict(triple_c.most_common(15)),
+                "final_source_entropy_bits": _shannon_entropy(dict(final_source_c)),
+                "hold_kind_counts": dict(hold_kind_c),
+            },
+            "final_source_counts": dict(final_source_c),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"ai-observability failed: {e!s}"
+        )
+    finally:
+        db.close()
+
+
+@router.get("/decision-source-distribution")
+def decision_source_distribution(limit: int = 5000) -> Dict[str, Any]:
+    """Distribution of pipeline outcomes: rule_only, combined, ml_override, ml_strict_failure."""
+    from collections import Counter
+
+    lim = max(1, min(int(limit), 20000))
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(TradingDecisionLog)
+            .order_by(TradingDecisionLog.ts.desc())
+            .limit(lim)
+            .all()
+        )
+        by_fs: Counter[str] = Counter()
+        grouped: Dict[str, int] = {
+            "rule_only": 0,
+            "combined": 0,
+            "ml_override": 0,
+            "ml_strict_failure": 0,
+            "other": 0,
+        }
+        for r in rows:
+            sig = _signals_dict(r)
+            fs = str(sig.get("final_source") or "unknown").lower()
+            by_fs[fs] += 1
+            bucket = _decision_source(sig)
+            if bucket in grouped:
+                grouped[bucket] += 1
+            else:
+                grouped["other"] += 1
+
+        total = sum(grouped.values()) or 1
+        pct = {k: round(100.0 * v / total, 2) for k, v in grouped.items()}
+        return {
+            "ok": True,
+            "sample_size": len(rows),
+            "grouped_counts": grouped,
+            "grouped_pct": pct,
+            "by_final_source": dict(by_fs),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"decision-source-distribution failed: {e!s}"
         )
     finally:
         db.close()

@@ -834,12 +834,23 @@ def get_position_history(
 def get_recent_logs(
     category: Optional[str] = None,
     level: Optional[str] = None,
+    symbol: Optional[str] = None,
+    all_symbols: bool = False,
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
-    """Get recent event logs"""
-    from src.db.models import EventLog
+    """Get recent event logs (symbol-scoped by default to avoid mixing pairs).
 
+    - ``symbol``: optional explicit Binance symbol (e.g. BTCUSDT).
+    - If omitted and ``all_symbols`` is false, scopes to ``TRADE_SYMBOL`` from settings.
+    - Set ``all_symbols=true`` only for admin views (mixed-symbol stream).
+    """
+    from src.db.models import EventLog
+    from sqlalchemy import or_
+
+    from src.core.config import get_settings as _gs
+
+    _settings = _gs()
     query = db.query(EventLog)
 
     if category:
@@ -847,10 +858,19 @@ def get_recent_logs(
     if level:
         query = query.filter(EventLog.level == level)
 
+    if not all_symbols:
+        scope = (symbol or _settings.trade_symbol).strip().upper()
+        query = query.filter(
+            or_(EventLog.symbol == scope, EventLog.symbol.is_(None))
+        )
+
     logs = query.order_by(EventLog.ts.desc()).limit(limit).all()
 
     return {
         "ok": True,
+        "scope": "all_symbols"
+        if all_symbols
+        else (symbol or _settings.trade_symbol).strip().upper(),
         "count": len(logs),
         "logs": [
             {
@@ -893,9 +913,10 @@ def get_recent_decisions(
     query = db.query(TradingDecisionLog)
 
     if symbol:
-        query = query.filter(TradingDecisionLog.symbol == symbol)
+        sym = symbol.strip().upper()
+        query = query.filter(TradingDecisionLog.symbol == sym)
     if action:
-        query = query.filter(TradingDecisionLog.action == action.upper())
+        query = query.filter(TradingDecisionLog.action == action.strip().upper())
 
     decisions = query.order_by(TradingDecisionLog.ts.desc()).limit(limit).all()
 
@@ -990,11 +1011,14 @@ def get_recent_decisions(
                 "prediction": ml_context.get("prediction"),
                 "prediction_confidence": ml_context.get("confidence"),
                 "ml_changed_final_action": ml_context.get("changed_final_action"),
-                "model_exists": ml_context.get("model_exists"),
-                "specific_model_match": ml_context.get("specific_match"),
+                "exact_match_exists": ml_context.get("exact_match_exists"),
+                "fallback_used": ml_context.get("fallback_used"),
+                "artifact_exists": ml_context.get("artifact_exists"),
+                "runtime_eligible": ml_context.get("runtime_eligible"),
                 "executed": d.executed,
                 "order_id": d.order_id,
                 "cycle_debug": parsed_signals.get("cycle_debug"),
+                "final_source": parsed_signals.get("final_source"),
             }
         )
 
@@ -1016,9 +1040,10 @@ def get_latest_decision(
     """
     from src.db.models import TradingDecisionLog
 
+    sym = symbol.strip().upper()
     decision = (
         db.query(TradingDecisionLog)
-        .filter(TradingDecisionLog.symbol == symbol)
+        .filter(TradingDecisionLog.symbol == sym)
         .order_by(TradingDecisionLog.ts.desc())
         .first()
     )
@@ -1026,7 +1051,7 @@ def get_latest_decision(
     if not decision:
         return {
             "ok": False,
-            "message": f"No decisions found for {symbol}",
+            "message": f"No decisions found for {sym}",
         }
 
     parsed_signals = json.loads(decision.signals_json) if decision.signals_json else {}
@@ -1077,6 +1102,7 @@ def get_latest_decision(
             "executed": decision.executed,
             "order_id": decision.order_id,
             "cycle_debug": parsed_signals.get("cycle_debug"),
+            "final_source": parsed_signals.get("final_source"),
         },
     }
 
@@ -1122,7 +1148,9 @@ def exchange_proof(symbol: Optional[str] = None, db: Session = Depends(get_db)):
     positions_history_res = get_position_history(symbol=selected_symbol, limit=20, db=db)
     open_orders_res = get_open_orders(symbol=selected_symbol)
     trades_res = get_my_trades(symbol=selected_symbol, limit=50)
-    recent_logs_res = get_recent_logs(limit=50, db=db)
+    recent_logs_res = get_recent_logs(
+        symbol=selected_symbol, limit=50, db=db
+    )
 
     usdt_balance = next(
         (

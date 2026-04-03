@@ -126,9 +126,15 @@ export default function Logs() {
                 </div>
               ))}
 
-            {(logs.loading || items.length === 0) && (
-              <div className="flex items-center justify-center px-3 py-10">
-                <div className="h-6 w-6 animate-spin rounded-full border-2 border-slate-300 border-t-slate-700" />
+            {!isInitialLoading && !logs.loading && items.length === 0 && (
+              <div className="px-3 py-10 text-center text-sm text-slate-500">
+                No log entries yet.
+              </div>
+            )}
+
+            {logs.loading && items.length > 0 && (
+              <div className="flex items-center justify-center border-t border-slate-100 px-3 py-3">
+                <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-slate-700" />
               </div>
             )}
           </div>

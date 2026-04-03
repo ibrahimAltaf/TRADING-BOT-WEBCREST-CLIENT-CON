@@ -67,16 +67,22 @@ export type TradingDecision = {
   executed: boolean;
   order_id: number | string | null;
 
+  /** Pipeline outcome (mirrors signals.final_source; duplicated for table display) */
+  final_source?: string | null;
+
   /** Per-cycle audit (rule/ml/final confidence, hold_kind, block_reasons) */
   cycle_debug?: {
-    rule_confidence: number;
-    ml_confidence: number | null;
-    final_confidence: number;
-    final_source: string;
-    hold_kind: string | null;
-    block_reasons: string[];
-    execution_eligible: boolean;
-    has_open_position: boolean;
+    symbol?: string;
+    timeframe?: string;
+    runtime_mode?: string;
+    rule_confidence?: number;
+    ml_confidence?: number | null;
+    final_confidence?: number;
+    final_source?: string;
+    hold_kind?: string | null;
+    block_reasons?: string[];
+    execution_eligible?: boolean;
+    has_open_position?: boolean;
     execution_block_reason?: string;
   };
 };
@@ -109,7 +115,55 @@ export type EventLog = {
 
 export type ExchangeLogsRecentResponse = {
   ok?: boolean;
+  count?: number;
+  /** Scoped symbol when backend filters (default: TRADE_SYMBOL); or "all_symbols" */
+  scope?: string;
   logs: EventLog[];
+};
+
+/** GET /exchange/performance/ai-observability */
+export type AiObservabilityResponse = {
+  ok: boolean;
+  sample_size: number;
+  symbol_filter: string | null;
+  ml_usage: {
+    cycles_with_ml_signal_field: number;
+    cycles_with_ml_confidence: number;
+    pct_with_ml_signal: number;
+    pct_with_ml_confidence: number;
+  };
+  runtime_posture: {
+    counts_by_runtime_mode: Record<string, number>;
+    degraded_or_unavailable_cycles: number;
+    ml_strict_failure_cycles: number;
+  };
+  decision_diversity: {
+    distinct_rule_ml_final_patterns: number;
+    pattern_top: Record<string, number>;
+    final_source_entropy_bits: number;
+    hold_kind_counts: Record<string, number>;
+  };
+  final_source_counts: Record<string, number>;
+};
+
+/** GET /status/model-health/symbols */
+export type ModelHealthSymbolsResponse = {
+  ok: boolean;
+  ml_enabled: boolean;
+  trade_timeframe: string;
+  degraded?: boolean;
+  note?: string;
+  symbols: Array<{
+    symbol: string;
+    exact_match_exists: boolean;
+    runtime_eligible: boolean;
+    fallback_used: boolean;
+    artifact_exists: boolean;
+    model_dir?: string;
+    reason?: string;
+    last_error?: string | null;
+    runtime_health?: unknown;
+  }>;
 };
 
 export type Position = {
@@ -499,6 +553,9 @@ export const exchangeApi = {
       limit?: number;
       category?: string;
       level?: "INFO" | "WARN" | "ERROR";
+      /** Binance symbol, e.g. BTCUSDT — scopes logs to this pair (+ system rows). */
+      symbol?: string;
+      all_symbols?: boolean;
     },
     signal?: AbortSignal,
   ) => {
@@ -508,6 +565,30 @@ export const exchangeApi = {
         params,
         signal,
       },
+    );
+    return r.data;
+  },
+
+  /** ML usage, runtime posture, diversity / entropy — must match backend JSON. */
+  aiObservability: async (
+    params?: { limit?: number; symbol?: string },
+    signal?: AbortSignal,
+  ) => {
+    const r = await http.get<AiObservabilityResponse>(
+      "/exchange/performance/ai-observability",
+      { params, signal },
+    );
+    return r.data;
+  },
+
+  /** Per-symbol model resolution + last_error (GET /status/... on API prefix). */
+  modelHealthSymbols: async (
+    params?: { load_model?: boolean },
+    signal?: AbortSignal,
+  ) => {
+    const r = await http.get<ModelHealthSymbolsResponse>(
+      "/status/model-health/symbols",
+      { params, signal },
     );
     return r.data;
   },

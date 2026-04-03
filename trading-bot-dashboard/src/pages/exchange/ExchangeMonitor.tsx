@@ -6,6 +6,8 @@ import {
   useDecisionLatestQuery,
   useDecisionsRecentQuery,
   useLogsRecentQuery,
+  useAiObservabilityQuery,
+  useModelHealthSymbolsQuery,
   useAllOrdersQuery,
   useTradesQuery,
   usePositionsOpenQuery,
@@ -27,6 +29,7 @@ function fmtNum(value: number | null | undefined, digits = 2) {
 }
 
 const INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
+const SYMBOL_QUICK = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
 type TableTab = "orders" | "trades";
 type InfoTab = "decisions" | "logs";
 
@@ -49,7 +52,9 @@ export default function ExchangeMonitor() {
   const klines = useKlinesQuery(symbol, interval, 100);
   const decisionLatest = useDecisionLatestQuery(symbol);
   const decisionsRecent = useDecisionsRecentQuery({ symbol, limit: 15 });
-  const logs = useLogsRecentQuery({ limit: 30 });
+  const logs = useLogsRecentQuery({ symbol, limit: 30 });
+  const aiObs = useAiObservabilityQuery({ symbol, limit: 5000 });
+  const modelHealth = useModelHealthSymbolsQuery(false);
   const allOrders = useAllOrdersQuery(symbol, 50);
   const trades = useTradesQuery({ symbol, limit: 50 });
   const positions = usePositionsOpenQuery();
@@ -71,7 +76,11 @@ export default function ExchangeMonitor() {
   const positionsList =
     positions.data?.positions ?? positions.data?.items ?? [];
   const decisions = decisionsRecent.data?.decisions ?? [];
-  const logItems = (logs.data as any)?.items ?? (logs.data as any)?.logs ?? [];
+  const logItems = logs.data?.items ?? logs.data?.logs ?? [];
+  const logScope = logs.data?.scope;
+  const mhRow = modelHealth.data?.symbols?.find(
+    (s) => s.symbol?.toUpperCase() === symbol.toUpperCase(),
+  );
   const perf = performanceSummary.data;
   const latestDecision = decisionLatest.data?.decision;
 
@@ -85,6 +94,22 @@ export default function ExchangeMonitor() {
             onChange={(e) => setSymbol(e.target.value.toUpperCase())}
             className="h-9 w-28 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-bold uppercase text-slate-800 focus:border-slate-400 focus:outline-none"
           />
+          <div className="flex items-center gap-1">
+            {SYMBOL_QUICK.map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setSymbol(s)}
+                className={`h-8 rounded-lg border px-2.5 text-xs font-bold uppercase transition-colors ${
+                  symbol === s
+                    ? "border-slate-800 bg-slate-900 text-white"
+                    : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                }`}
+              >
+                {s.replace("USDT", "")}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-1">
             {INTERVALS.map((i) => (
               <button
@@ -119,6 +144,161 @@ export default function ExchangeMonitor() {
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
             Live
           </div>
+        </div>
+      </div>
+
+      {/* ── AI observability (backend truth for selected symbol) ── */}
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-900">
+            AI observability
+          </h3>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+            {aiObs.isFetching && (
+              <span className="animate-pulse">Updating…</span>
+            )}
+            <span className="font-mono">
+              n={aiObs.data?.sample_size ?? "—"}
+              {aiObs.data?.symbol_filter != null && (
+                <> · filter {aiObs.data.symbol_filter}</>
+              )}
+            </span>
+          </div>
+        </div>
+
+        {aiObs.error && (
+          <p className="text-sm text-rose-600">{aiObs.error.message}</p>
+        )}
+
+        {!aiObs.error && (
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <div className="space-y-2 rounded-lg border border-slate-100 bg-slate-50/80 p-3">
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                ML usage (recent decisions)
+              </div>
+              <div className="space-y-1 text-sm text-slate-800">
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-500">% with ML signal</span>
+                  <span className="font-mono font-semibold tabular-nums">
+                    {aiObs.data?.ml_usage.pct_with_ml_signal != null
+                      ? `${aiObs.data.ml_usage.pct_with_ml_signal.toFixed(1)}%`
+                      : "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-500">% with ML confidence</span>
+                  <span className="font-mono font-semibold tabular-nums">
+                    {aiObs.data?.ml_usage.pct_with_ml_confidence != null
+                      ? `${aiObs.data.ml_usage.pct_with_ml_confidence.toFixed(1)}%`
+                      : "—"}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2 rounded-lg border border-slate-100 bg-slate-50/80 p-3">
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Runtime posture
+              </div>
+              <div className="space-y-1 text-sm text-slate-800">
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-500">Degraded / unavailable</span>
+                  <span className="font-mono font-semibold tabular-nums">
+                    {aiObs.data?.runtime_posture
+                      .degraded_or_unavailable_cycles ?? "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-500">ML strict failure</span>
+                  <span className="font-mono font-semibold tabular-nums">
+                    {aiObs.data?.runtime_posture.ml_strict_failure_cycles ?? "—"}
+                  </span>
+                </div>
+                <div className="mt-2 max-h-24 overflow-y-auto text-[11px] leading-relaxed text-slate-600">
+                  {aiObs.data?.runtime_posture.counts_by_runtime_mode &&
+                    Object.entries(
+                      aiObs.data.runtime_posture.counts_by_runtime_mode,
+                    ).map(([k, v]) => (
+                      <span key={k} className="mr-2 inline-block">
+                        {k}: <strong>{v}</strong>
+                      </span>
+                    ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2 rounded-lg border border-slate-100 bg-slate-50/80 p-3">
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Diversity / entropy
+              </div>
+              <div className="flex justify-between gap-2 text-sm">
+                <span className="text-slate-500">final_source entropy (bits)</span>
+                <span className="font-mono font-semibold tabular-nums">
+                  {aiObs.data?.decision_diversity.final_source_entropy_bits != null
+                    ? aiObs.data.decision_diversity.final_source_entropy_bits
+                    : "—"}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {aiObs.data?.final_source_counts &&
+                  Object.entries(aiObs.data.final_source_counts).map(
+                    ([src, n]) => (
+                      <span
+                        key={src}
+                        className="rounded-md bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 shadow-sm ring-1 ring-slate-200"
+                      >
+                        {src}: {n}
+                      </span>
+                    ),
+                  )}
+              </div>
+              <div className="text-[11px] text-slate-500">
+                Hold kinds:{" "}
+                {aiObs.data?.decision_diversity.hold_kind_counts &&
+                Object.keys(aiObs.data.decision_diversity.hold_kind_counts)
+                  .length > 0
+                  ? Object.entries(
+                      aiObs.data.decision_diversity.hold_kind_counts,
+                    ).map(([k, v]) => (
+                      <span key={k} className="mr-2">
+                        {k}:{v}
+                      </span>
+                    ))
+                  : "—"}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="mt-4 rounded-lg border border-dashed border-slate-200 bg-slate-50/50 p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Model health · {symbol}
+          </div>
+          {modelHealth.isLoading && (
+            <p className="mt-1 text-sm text-slate-400">Loading…</p>
+          )}
+          {modelHealth.error && (
+            <p className="mt-1 text-sm text-rose-600">
+              {modelHealth.error.message}
+            </p>
+          )}
+          {!modelHealth.isLoading && !modelHealth.error && (
+            <div className="mt-2 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+              <ObsBool
+                label="Exact match"
+                value={mhRow?.exact_match_exists}
+              />
+              <ObsBool label="Runtime eligible" value={mhRow?.runtime_eligible} />
+              <ObsBool label="Artifact exists" value={mhRow?.artifact_exists} />
+              <ObsBool label="Fallback used" value={mhRow?.fallback_used} />
+            </div>
+          )}
+          {mhRow?.reason && (
+            <p className="mt-2 text-xs text-amber-800">{mhRow.reason}</p>
+          )}
+          {mhRow?.last_error && (
+            <p className="mt-1 text-xs text-rose-700">{mhRow.last_error}</p>
+          )}
         </div>
       </div>
 
@@ -284,6 +464,32 @@ export default function ExchangeMonitor() {
                 <InfoRow
                   label="Rule / ML / Final"
                   value={`${latestDecision.rule_signal ?? "—"} / ${latestDecision.ml_signal ?? "—"} / ${latestDecision.final_action ?? latestDecision.action ?? "—"}`}
+                />
+                <InfoRow
+                  label="final_source"
+                  value={
+                    <span className="font-mono text-xs">
+                      {latestDecision.final_source ??
+                        latestDecision.cycle_debug?.final_source ??
+                        "—"}
+                    </span>
+                  }
+                />
+                <InfoRow
+                  label="hold_kind"
+                  value={
+                    <span className="font-mono text-xs">
+                      {latestDecision.cycle_debug?.hold_kind ?? "—"}
+                    </span>
+                  }
+                />
+                <InfoRow
+                  label="runtime_mode"
+                  value={
+                    <span className="font-mono text-xs">
+                      {latestDecision.cycle_debug?.runtime_mode ?? "—"}
+                    </span>
+                  }
                 />
                 <InfoRow
                   label="Risk-Reward"
@@ -460,13 +666,20 @@ export default function ExchangeMonitor() {
               </button>
             ))}
           </div>
-          {(infoTab === "decisions"
-            ? decisionsRecent.isFetching
-            : logs.isFetching) && (
-            <span className="text-xs text-slate-400 animate-pulse">
-              Updating…
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {infoTab === "logs" && logScope != null && (
+              <span className="text-xs font-medium text-slate-500">
+                Scope: <span className="font-mono">{logScope}</span>
+              </span>
+            )}
+            {(infoTab === "decisions"
+              ? decisionsRecent.isFetching
+              : logs.isFetching) && (
+              <span className="text-xs text-slate-400 animate-pulse">
+                Updating…
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="max-h-80 overflow-auto p-3">
@@ -546,6 +759,19 @@ export default function ExchangeMonitor() {
                               {d.combined_signal && (
                                 <span className="rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
                                   Combined: {d.combined_signal}
+                                </span>
+                              )}
+
+                              {(d.final_source || d.cycle_debug?.final_source) && (
+                                <span className="rounded-md bg-slate-900 px-2 py-0.5 text-[11px] font-medium text-white">
+                                  final_source:{" "}
+                                  {d.final_source ?? d.cycle_debug?.final_source}
+                                </span>
+                              )}
+
+                              {d.cycle_debug?.hold_kind && (
+                                <span className="rounded-md bg-cyan-50 px-2 py-0.5 text-[11px] font-medium text-cyan-800 ring-1 ring-cyan-100">
+                                  hold: {d.cycle_debug.hold_kind}
                                 </span>
                               )}
 
@@ -685,6 +911,25 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
     <div className="flex items-center justify-between">
       <span className="text-xs text-slate-500">{label}</span>
       <span className="text-sm font-semibold text-slate-800">{value}</span>
+    </div>
+  );
+}
+
+function ObsBool({ label, value }: { label: string; value?: boolean }) {
+  const ok = value === true;
+  const bad = value === false;
+  return (
+    <div className="rounded-md border border-slate-100 bg-white px-2 py-1.5">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+        {label}
+      </div>
+      <div
+        className={`mt-0.5 text-sm font-bold ${
+          ok ? "text-emerald-600" : bad ? "text-rose-600" : "text-slate-400"
+        }`}
+      >
+        {value === undefined ? "—" : ok ? "Yes" : "No"}
+      </div>
     </div>
   );
 }

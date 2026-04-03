@@ -148,7 +148,7 @@ def get_settings() -> Settings:
     # ===== ML (Phase-1 included, feature-flagged) =====
     # Default true: ML is part of the product pipeline; disable explicitly for dev/CI without a model.
     ml_enabled = _env_bool("ML_ENABLED", "true")
-    ml_model_dir = os.getenv("ML_MODEL_DIR", "models/btc_usdt_5m").strip()
+    ml_model_dir = os.getenv("ML_MODEL_DIR", "models").strip()
     ml_lookback = _env_int("ML_LOOKBACK", "50")
     ml_agree_threshold = _env_float("ML_AGREE_THRESHOLD", "0.70")
     # When ML confidence >= this, follow ML even if directional rules disagree.

@@ -3,6 +3,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime
 import os
 import threading
+from typing import Any, Dict
 
 from src.exchange.binance_spot_client import BinanceSpotClient
 from src.risk.rules import RiskConfig
@@ -17,6 +18,40 @@ client = BinanceSpotClient()
 # Prevent overlapping runs: if previous job still running, skip this cycle instead of
 # letting APScheduler log "maximum number of running instances reached".
 _job_lock = threading.Lock()
+
+# Last successful cycle start per symbol (for observability / audits).
+_symbol_last_run: Dict[str, datetime] = {}
+# Last skip reason when a symbol was not executed (runtime / plan).
+_symbol_last_skip: Dict[str, str] = {}
+
+
+def _runtime_plan_for_symbol(symbol: str, timeframe: str, settings: Any) -> Dict[str, Any]:
+    """Per-symbol ML + execution gate before calling the engine (cheap path check)."""
+    import os
+
+    from src.ml.model_selector import resolve_model_selection
+
+    ctx = resolve_model_selection(
+        base_model_dir=settings.ml_model_dir,
+        symbol=symbol,
+        timeframe=timeframe,
+        version=os.getenv("ML_MODEL_VERSION", "").strip() or None,
+    )
+    ml_on = bool(getattr(settings, "ml_enabled", False))
+    re_ok = bool(ctx.get("runtime_eligible"))
+    risk_ok = True
+    execution_allowed = (not ml_on) or re_ok
+    return {
+        "symbol": symbol,
+        "enabled": True,
+        "exact_match_exists": bool(ctx.get("exact_match_exists")),
+        "runtime_eligible": re_ok,
+        "risk_ok": risk_ok,
+        "execution_allowed": execution_allowed,
+        "reason": ctx.get("reason"),
+        "fallback_used": bool(ctx.get("fallback_used")),
+    }
+
 
 # Interval in minutes (env SCHEDULER_INTERVAL_MINUTES, default 5). Increase to 10–15
 # if each cycle often takes longer than the interval.
@@ -49,6 +84,12 @@ def _is_scheduler_enabled() -> bool:
     return os.getenv("LIVE_SCHEDULER_ENABLED", "false").lower() == "true"
 
 
+def _active_symbols_from_config() -> list[str]:
+    """Multi-symbol list from SUPPORTED_TRADING_SYMBOLS (see src.core.symbols)."""
+    settings = get_settings()
+    return list(settings.supported_trading_symbols)
+
+
 def live_job():
     """
     Execute auto-trade using AutoTradeEngine.
@@ -68,11 +109,11 @@ def live_job():
 
 
 def _run_live_job():
-    """Inner live job: holds _job_lock already — one independent cycle per symbol."""
+    """Inner live job: one cycle per configured symbol; failures are isolated."""
     db = SessionLocal()
     try:
         settings = get_settings()
-        symbols = list(settings.supported_trading_symbols)
+        symbols = _active_symbols_from_config()
         timeframe = settings.trade_timeframe
 
         risk = RiskConfig(
@@ -89,23 +130,44 @@ def _run_live_job():
 
         any_executed = False
         for symbol in symbols:
-            result = engine.execute_auto_trade(
-                symbol=symbol,
-                timeframe=timeframe,
-                risk_pct=risk.max_position_pct,
-            )
             ts = datetime.utcnow()
-            if result.executed:
-                any_executed = True
+            plan = _runtime_plan_for_symbol(symbol, timeframe, settings)
+            if not plan["execution_allowed"]:
                 print(
-                    f"[SCHEDULER][{ts}] {symbol} orderId={result.order_id} "
-                    f"status={result.exchange_status} price={result.price:.4f}"
+                    f"[SCHEDULER][{ts}] {symbol} runtime_not_eligible (plan) — "
+                    f"running engine to persist degraded cycle in DB plan={plan}"
                 )
-            else:
+
+            try:
+                result = engine.execute_auto_trade(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    risk_pct=risk.max_position_pct,
+                )
+                _symbol_last_run[symbol] = ts
+                rsn = result.reason or ""
+                if "AI runtime degraded" in rsn or "ml_strict" in rsn.lower():
+                    _symbol_last_skip[symbol] = rsn[:500]
+                else:
+                    _symbol_last_skip.pop(symbol, None)
+                if result.executed:
+                    any_executed = True
+                    print(
+                        f"[SCHEDULER][{ts}] {symbol} orderId={result.order_id} "
+                        f"status={result.exchange_status} price={result.price:.4f}"
+                    )
+                else:
+                    print(
+                        f"[SCHEDULER][{ts}] {symbol} signal={result.signal} "
+                        f"reason={result.reason}"
+                    )
+            except Exception as sym_err:
+                skip_reason = str(sym_err)[:500]
                 print(
-                    f"[SCHEDULER][{ts}] {symbol} signal={result.signal} "
-                    f"reason={result.reason}"
+                    f"[SCHEDULER][{datetime.utcnow()}] {symbol} SKIP "
+                    f"reason={skip_reason}"
                 )
+                continue
 
         b2 = client.balances_map()
         usdt_after = float(b2.get("USDT", "0"))

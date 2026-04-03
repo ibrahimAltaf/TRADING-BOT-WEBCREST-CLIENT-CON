@@ -1,9 +1,18 @@
 from __future__ import annotations
+
 import json
 from pathlib import Path
+from typing import Any, Dict, Union
+
 import numpy as np
 import pandas as pd
 
+from src.ml.exceptions import (
+    MlFeatureMismatch,
+    MlInsufficientRows,
+    MlModelNotFound,
+    MlRuntimeError,
+)
 from src.ml.features import FEATURE_COLUMNS_LEGACY, select_features
 
 _CLASSES = ["SELL", "HOLD", "BUY"]
@@ -22,8 +31,79 @@ def _import_tensorflow():
         ) from e
 
 
+def validate_model_package(model_dir: Union[str, Path]) -> Dict[str, Any]:
+    """Verify artifacts and consistency (scaler / meta / Keras input). Raises on failure."""
+    d = Path(model_dir).resolve()
+    keras_p = d / "model.keras"
+    scaler_p = d / "scaler.json"
+    meta_p = d / "meta.json"
+    if not keras_p.is_file():
+        raise MlModelNotFound(f"missing model.keras under {d}")
+    if not scaler_p.is_file():
+        raise MlModelNotFound(f"missing scaler.json under {d}")
+    if not meta_p.is_file():
+        raise MlModelNotFound(f"missing meta.json under {d}")
+
+    scaler = json.loads(scaler_p.read_text())
+    mean = np.asarray(scaler.get("mean"), dtype=np.float64)
+    scale = np.asarray(scaler.get("scale"), dtype=np.float64)
+    if mean.ndim != 1 or scale.ndim != 1:
+        raise MlFeatureMismatch("scaler mean/scale must be 1-D arrays")
+    if mean.size != scale.size:
+        raise MlFeatureMismatch(
+            f"scaler mean length {mean.size} != scale length {scale.size}"
+        )
+
+    meta = json.loads(meta_p.read_text())
+    lookback = int(meta["lookback"])
+    feature_columns = meta.get("feature_columns")
+    if not feature_columns:
+        feature_columns = list(FEATURE_COLUMNS_LEGACY)
+    n_features = int(meta.get("n_features", len(feature_columns)))
+    if len(feature_columns) != n_features:
+        raise MlFeatureMismatch(
+            f"meta feature_columns len {len(feature_columns)} != n_features {n_features}"
+        )
+    if mean.size != n_features:
+        raise MlFeatureMismatch(
+            f"scaler length {mean.size} != meta n_features {n_features}"
+        )
+
+    tf = _import_tensorflow()
+    model = tf.keras.models.load_model(keras_p)
+    inp = model.input_shape
+    if inp is not None and len(inp) >= 3:
+        t_in = inp[1]
+        f_in = inp[2]
+        if t_in is not None and int(t_in) != lookback:
+            raise MlFeatureMismatch(
+                f"model input time steps {int(t_in)} != meta lookback {lookback}"
+            )
+        if f_in is not None and int(f_in) != n_features:
+            raise MlFeatureMismatch(
+                f"model input features {int(f_in)} != meta n_features {n_features}"
+            )
+
+    return {
+        "model_dir": str(d),
+        "lookback": lookback,
+        "n_features": n_features,
+        "feature_columns": feature_columns,
+    }
+
+
+def runtime_health(model_dir: str) -> Dict[str, Any]:
+    """Lightweight readiness probe for ops (uses validate_model_package)."""
+    try:
+        validate_model_package(model_dir)
+        return {"ready": True, "error": None}
+    except Exception as e:
+        return {"ready": False, "error": str(e)[:1000]}
+
+
 class LstmInfer:
     def __init__(self, model_dir: str):
+        validate_model_package(model_dir)
         tf = _import_tensorflow()
         self.model_dir = Path(model_dir)
         self.model = tf.keras.models.load_model(self.model_dir / "model.keras")
@@ -43,10 +123,8 @@ class LstmInfer:
         return (X - self.mean) / self.scale
 
     def predict_window(self, window_df: pd.DataFrame) -> dict:
+        validate_window(window_df, self)
         feats = select_features(window_df, self.feature_columns)
-        if len(feats) < self.lookback:
-            raise ValueError(f"Need {self.lookback} rows, got {len(feats)}")
-
         last = feats.tail(self.lookback).to_numpy(dtype=np.float32)
         last = self._scale(last)
         X = last.reshape(1, self.lookback, self.n_features)
@@ -60,6 +138,23 @@ class LstmInfer:
             "signal": _CLASSES[idx],
             "confidence": float(probs[idx]),
         }
+
+
+def validate_window(window_df: pd.DataFrame, infer: LstmInfer) -> None:
+    """Strict checks before forward pass — raises on invalid input."""
+    feats = select_features(window_df, infer.feature_columns)
+    if len(feats) < infer.lookback:
+        raise MlInsufficientRows(
+            f"need at least {infer.lookback} rows after feature select, got {len(feats)}"
+        )
+    if int(feats.shape[1]) != int(infer.n_features):
+        raise MlFeatureMismatch(
+            f"window feature columns count {feats.shape[1]} != model n_features {infer.n_features}"
+        )
+    last = feats.tail(infer.lookback)
+    arr = last.to_numpy(dtype=np.float64)
+    if not np.isfinite(arr).all():
+        raise MlRuntimeError("window contains NaN or Inf after feature selection")
 
 
 _cache: dict[str, LstmInfer] = {}

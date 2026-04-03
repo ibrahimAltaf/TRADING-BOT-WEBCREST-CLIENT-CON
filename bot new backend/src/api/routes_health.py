@@ -267,8 +267,8 @@ def model_health(load_model: bool = True, smoke: bool = False) -> Dict[str, Any]
             version=version,
         )
         out["model_resolved"] = ctx
-        out["correct_symbol_match"] = bool(ctx.get("specific_match"))
-        if ctx.get("model_exists") and load_model:
+        out["correct_symbol_match"] = bool(ctx.get("exact_match_exists"))
+        if ctx.get("runtime_eligible") and load_model:
             out["load_model_attempted"] = True
             from src.ml.inference import get_infer
 
@@ -347,15 +347,87 @@ def model_health(load_model: bool = True, smoke: bool = False) -> Dict[str, Any]
                     (out.get("note") or "")
                     + " | set smoke=true for live inference check"
                 ).strip(" |")
-        elif ctx.get("model_exists") and not load_model:
+        elif ctx.get("runtime_eligible") and not load_model:
             out["note"] = "model.keras present; load_model=false (skipped inferencer load)"
         else:
-            out["note"] = "No model.keras found for resolved path"
+            out["note"] = (
+                "No runtime-eligible exact model package (see model_resolved.reason)"
+            )
     except Exception as e:
         out["ok"] = False
         out["error"] = str(e)
     out["model_loaded"] = bool(out.get("inferencer_loaded"))
+    if out.get("ml_enabled") and out.get("model_resolved"):
+        ctx = out["model_resolved"]
+        if isinstance(ctx, dict) and not ctx.get("runtime_eligible"):
+            out["ok"] = False
+            out["degraded"] = True
+            out["last_error"] = str(ctx.get("reason") or "runtime_not_eligible")
+        elif isinstance(ctx, dict) and ctx.get("runtime_eligible"):
+            out["degraded"] = False
+            out["last_error"] = None
     return out
+
+
+@router.get("/model-health/symbols")
+def model_health_per_symbol(load_model: bool = False) -> Dict[str, Any]:
+    """Per-symbol ML resolution: exact match, eligibility, fallback flag, last validation error."""
+    s = get_settings()
+    if not getattr(s, "ml_enabled", False):
+        return {
+            "ok": True,
+            "ml_enabled": False,
+            "symbols": [],
+            "note": "ML_ENABLED=false",
+        }
+
+    from src.ml.model_selector import resolve_model_selection
+    from src.ml.inference import runtime_health
+
+    version = os.getenv("ML_MODEL_VERSION", "").strip() or None
+    symbols = list(getattr(s, "supported_trading_symbols", ()))
+    items: list[Dict[str, Any]] = []
+    any_degraded = False
+
+    for sym in symbols:
+        ctx = resolve_model_selection(
+            base_model_dir=s.ml_model_dir,
+            symbol=sym,
+            timeframe=s.trade_timeframe,
+            version=version,
+        )
+        last_err: Optional[str] = None
+        rh: Dict[str, Any] = {}
+        if ctx.get("runtime_eligible") and load_model:
+            rh = runtime_health(str(ctx["model_dir"]))
+            last_err = rh.get("error")
+            if not rh.get("ready"):
+                any_degraded = True
+        elif not ctx.get("runtime_eligible"):
+            last_err = str(ctx.get("reason") or "not_eligible")
+            any_degraded = True
+
+        items.append(
+            {
+                "symbol": sym,
+                "exact_match_exists": bool(ctx.get("exact_match_exists")),
+                "runtime_eligible": bool(ctx.get("runtime_eligible")),
+                "fallback_used": bool(ctx.get("fallback_used")),
+                "artifact_exists": bool(ctx.get("artifact_exists")),
+                "model_dir": ctx.get("model_dir"),
+                "reason": ctx.get("reason"),
+                "last_error": last_err,
+                "runtime_health": rh if rh else None,
+            }
+        )
+
+    return {
+        "ok": not any_degraded,
+        "ml_enabled": True,
+        "trade_timeframe": s.trade_timeframe,
+        "symbols": items,
+        "degraded": any_degraded,
+    }
 
 
 @router.get("/runtime-paths")

@@ -35,8 +35,10 @@ def _decision(
             "prediction": ml_signal,
             "confidence": ml_confidence,
             "changed_final_action": changed_final_action,
-            "model_exists": True,
-            "specific_match": True,
+            "exact_match_exists": True,
+            "fallback_used": False,
+            "artifact_exists": True,
+            "runtime_eligible": True,
         },
     }
     return SimpleNamespace(
