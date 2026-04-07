@@ -200,7 +200,11 @@ class TestAiObservabilityContract:
         assert rp["ml_strict_failure_cycles"] >= 1
         assert data["decision_diversity"]["final_source_entropy_bits"] > 0
         assert "final_source_counts" in data
-        assert data["final_source_counts"].get("ml_strict_failure", 0) >= 1
+        fs_counts = data["final_source_counts"]
+        assert (
+            fs_counts.get("ml_strict_failure", 0) + fs_counts.get("ml_runtime_failure", 0)
+            >= 1
+        )
 
 
 def test_latest_decision_normalizes_symbol(client, patched_session):

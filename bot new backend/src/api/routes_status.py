@@ -49,7 +49,7 @@ def _decision_source(signals: Dict[str, Any]) -> str:
         "ml_rule_conflict_hold",
     ):
         return "ml_override"
-    if final_source == "ml_strict_failure":
+    if final_source in ("ml_strict_failure", "ml_runtime_failure"):
         return "ml_strict_failure"
     return "other"
 
@@ -565,7 +565,7 @@ def ai_observability_metrics(
 
             fs = str(sig.get("final_source") or "unknown").lower()
             final_source_c[fs] += 1
-            if fs == "ml_strict_failure":
+            if fs in ("ml_strict_failure", "ml_runtime_failure"):
                 strict_failure_cycles += 1
 
             if rm in ("ai_degraded", "ai_unavailable"):

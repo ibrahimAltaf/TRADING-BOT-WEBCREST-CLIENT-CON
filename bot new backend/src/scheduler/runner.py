@@ -129,9 +129,21 @@ def _run_live_job():
         usdt_before = float(b1.get("USDT", "0"))
 
         any_executed = False
+        ml_strict = bool(getattr(settings, "ml_strict", False))
+        ml_on = bool(getattr(settings, "ml_enabled", False))
         for symbol in symbols:
             ts = datetime.utcnow()
             plan = _runtime_plan_for_symbol(symbol, timeframe, settings)
+            if ml_on and ml_strict and not plan.get("runtime_eligible"):
+                print(
+                    f"[SCHEDULER][{ts}] {symbol} SKIP: ML_STRICT and model not runtime_eligible "
+                    f"(reason={plan.get('reason')}) — no engine call"
+                )
+                _symbol_last_skip[symbol] = (
+                    f"ml_strict_skip:{plan.get('reason', '')}"[:500]
+                )
+                continue
+
             if not plan["execution_allowed"]:
                 print(
                     f"[SCHEDULER][{ts}] {symbol} runtime_not_eligible (plan) — "

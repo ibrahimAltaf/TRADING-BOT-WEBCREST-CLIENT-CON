@@ -118,6 +118,14 @@ class LstmInfer:
         if not self.feature_columns:
             self.feature_columns = list(FEATURE_COLUMNS_LEGACY)
         self.n_features = int(meta.get("n_features", len(self.feature_columns)))
+        if int(self.mean.size) != int(self.scale.size):
+            raise MlFeatureMismatch(
+                f"scaler mean length {self.mean.size} != scale length {self.scale.size}"
+            )
+        if len(self.feature_columns) != int(self.n_features):
+            raise MlFeatureMismatch(
+                f"feature_columns len {len(self.feature_columns)} != n_features {self.n_features}"
+            )
 
     def _scale(self, X: np.ndarray) -> np.ndarray:
         return (X - self.mean) / self.scale
@@ -127,6 +135,8 @@ class LstmInfer:
         feats = select_features(window_df, self.feature_columns)
         last = feats.tail(self.lookback).to_numpy(dtype=np.float32)
         last = self._scale(last)
+        if not np.isfinite(last).all():
+            raise MlRuntimeError("scaled inference window contains NaN or Inf")
         X = last.reshape(1, self.lookback, self.n_features)
 
         probs = self.model.predict(X, verbose=0)[0]  # (3,)

@@ -58,6 +58,8 @@ class TradeResult:
     executed: bool
     signal: str
     reason: str
+    # True when ML_STRICT aborted the cycle (persisted as action BLOCKED, not HOLD)
+    blocked: bool = False
 
     order_id: Optional[str] = None
     price: Optional[float] = None
@@ -472,15 +474,31 @@ class AutoTradeEngine:
         model_loaded: bool,
         ml_context: Dict[str, Any],
     ) -> TradeResult:
-        """ML_STRICT: no silent rule-only path when ML pipeline is required."""
-        decision.action = SignalAction.HOLD
+        """ML_STRICT: no silent rule-only path when ML pipeline is required.
+
+        Persists action BLOCKED (not HOLD) so audits distinguish system failure from flat market HOLD.
+        """
+        decision.action = SignalAction.BLOCKED
+        decision.confidence = 0.0
         if not ml_context.get("runtime_eligible"):
-            decision.reason = "AI runtime degraded"
+            decision.reason = f"AI runtime blocked: {err}"
         else:
-            decision.reason = f"AI runtime degraded: {err}"
-        decision.signals["final_source"] = "ml_strict_failure"
-        decision.signals["combined_signal"] = "HOLD"
+            decision.reason = f"AI runtime blocked: {err}"
+        # Canonical failure source (legacy dashboards may still search ml_strict_failure)
+        decision.signals["final_source"] = "ml_runtime_failure"
+        decision.signals["legacy_final_source"] = "ml_strict_failure"
+        decision.signals["decision_status"] = "blocked"
+        decision.signals["error_class"] = "ml_runtime_failure"
+        decision.signals["combined_signal"] = "BLOCKED"
         decision.signals["rule_signal"] = rule_signal_value
+        decision.signals["runtime_truth"] = {
+            "ml_signal": decision.signals.get("ml_signal"),
+            "ml_confidence": decision.signals.get("ml_confidence"),
+            "final_source": "ml_runtime_failure",
+            "blocked": True,
+            "executed": False,
+            "rule_signal": rule_signal_value,
+        }
         self._apply_ml_audit_fields(
             decision,
             ml_context=ml_context,
@@ -519,6 +537,12 @@ class AutoTradeEngine:
             rule_confidence_before_ml=rule_confidence_before_ml,
             has_open_position=open_position is not None,
         )
+        cd_blk = decision.signals.setdefault("cycle_debug", {})
+        if isinstance(cd_blk, dict):
+            cd_blk["runtime_blocked"] = True
+            cd_blk["block_reason"] = "ml_runtime_failure"
+            cd_blk["final_signal"] = "BLOCKED"
+
         self._attach_cycle_envelope(
             decision,
             symbol=symbol,
@@ -531,7 +555,7 @@ class AutoTradeEngine:
             ml_conf=decision.signals.get("ml_confidence"),
             model_loaded=model_loaded,
             feature_columns_present=feature_columns_valid(df),
-            final_source="ml_strict_failure",
+            final_source="ml_runtime_failure",
             open_position=open_position,
             gate_eval=gate_eval,
             ml_error=err,
@@ -547,9 +571,10 @@ class AutoTradeEngine:
         return TradeResult(
             success=False,
             executed=False,
-            signal="HOLD",
+            signal="BLOCKED",
             reason=decision.reason,
             price=current_price,
+            blocked=True,
         )
 
     def _apply_ml_audit_fields(
@@ -1190,7 +1215,6 @@ class AutoTradeEngine:
                 decision.signals["ml_load_error"] = ml_context.get(
                     "reason", "runtime_not_eligible"
                 )
-                decision.signals["final_source"] = "ml_strict_failure"
                 return self._ml_strict_abort_trading_cycle(
                     decision=decision,
                     symbol=symbol,
@@ -1368,8 +1392,10 @@ class AutoTradeEngine:
                     )
             elif _final_source == "rule_only_ml_disabled":
                 decision.signals["override_reason"] = "ML disabled"
-            elif _final_source == "ml_strict_failure":
-                decision.signals["override_reason"] = "AI runtime degraded — trading halted for this cycle"
+            elif _final_source in ("ml_strict_failure", "ml_runtime_failure"):
+                decision.signals["override_reason"] = (
+                    "AI runtime blocked — cycle not a trade decision (ML_STRICT)"
+                )
             else:
                 decision.signals["override_reason"] = _final_source
 

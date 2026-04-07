@@ -29,6 +29,8 @@ class SignalAction(Enum):
     BUY = "BUY"
     SELL = "SELL"
     HOLD = "HOLD"
+    # System blocked cycle: ML/runtime failure under ML_STRICT — not a market HOLD
+    BLOCKED = "BLOCKED"
 
 
 @dataclass

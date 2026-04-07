@@ -262,6 +262,55 @@ def status_ml():
     }
 
 
+@app.get("/status/ml-runtime")
+def status_ml_runtime():
+    """Per-symbol ML readiness: exact path, artifacts, inferencer cache (no heavy smoke)."""
+    import os
+
+    from src.ml.model_selector import resolve_model_selection
+    from src.ml.inference import runtime_health
+
+    s = get_settings()
+    ver = os.getenv("ML_MODEL_VERSION", "").strip() or None
+    tf = s.trade_timeframe
+    out: list[dict] = []
+    all_ok = True
+    for sym in s.supported_trading_symbols:
+        ctx = resolve_model_selection(
+            base_model_dir=s.ml_model_dir,
+            symbol=sym,
+            timeframe=tf,
+            version=ver,
+        )
+        re_ok = bool(ctx.get("runtime_eligible"))
+        if re_ok:
+            rh = runtime_health(str(ctx["model_dir"]))
+            ml_ready = bool(rh.get("ready"))
+            if not ml_ready:
+                all_ok = False
+        else:
+            rh = {"ready": False, "error": str(ctx.get("reason"))}
+            all_ok = False
+            ml_ready = False
+        out.append(
+            {
+                "symbol": sym,
+                "timeframe": tf,
+                "model_exists": bool(ctx.get("exact_match_exists")),
+                "specific_match": bool(ctx.get("exact_match_exists")),
+                "runtime_eligible": re_ok,
+                "ml_ready": ml_ready,
+                "model_dir": ctx.get("model_dir"),
+                "detail": rh,
+            }
+        )
+    return {
+        "ok": all_ok,
+        "trade_timeframe": tf,
+        "symbols": out,
+    }
+
+
 @app.get("/status-summary")
 def status_summary_alias():
     """Same payload as GET /status/summary — for audits/tools that expect kebab-case."""
