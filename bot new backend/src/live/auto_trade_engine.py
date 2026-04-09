@@ -330,6 +330,10 @@ class AutoTradeEngine:
             reason=f"Engine exception ({type(exc).__name__}): {err_msg[:19000]}",
             signals=sig,
         )
+        self._attach_confidence_audit_fields(
+            decision,
+            rule_confidence_before_ml=None,
+        )
         self._save_decision(
             decision, symbol=symbol, timeframe=timeframe, executed=False
         )
@@ -383,9 +387,9 @@ class AutoTradeEngine:
             "rule_signal": rule_signal_value,
             "rule_confidence": round(finite_float(rule_confidence_before_ml, 0.0), 4),
             "ml_signal": ml_signal_value,
-            "ml_confidence": round(finite_float(ml_conf, 0.0), 4)
-            if ml_conf is not None
-            else None,
+            "ml_confidence": (
+                round(finite_float(ml_conf, 0.0), 4) if ml_conf is not None else None
+            ),
             "combined_signal": combined,
             "final_signal": action,
             "final_source": final_src,
@@ -397,7 +401,9 @@ class AutoTradeEngine:
         }
         decision.signals = sig
 
-    def _patch_cycle_execution_block(self, decision: TradingDecision, reason: str) -> None:
+    def _patch_cycle_execution_block(
+        self, decision: TradingDecision, reason: str
+    ) -> None:
         if not isinstance(decision.signals, dict):
             return
         cd = decision.signals.get("cycle_debug") or {}
@@ -561,6 +567,10 @@ class AutoTradeEngine:
             ml_error=err,
             cooldown_blocked=False,
         )
+        self._attach_confidence_audit_fields(
+            decision,
+            rule_confidence_before_ml=rule_confidence_before_ml,
+        )
         self._save_decision(decision, symbol, timeframe, executed=False)
         self._log_event(
             "ERROR",
@@ -646,6 +656,37 @@ class AutoTradeEngine:
                 f"vs ml={ml_out.signal.value} @ {ml_out.confidence:.2f}",
                 symbol=ml_context.get("symbol"),
             )
+        decision.signals = sig
+
+    def _attach_confidence_audit_fields(
+        self,
+        decision: TradingDecision,
+        *,
+        rule_confidence_before_ml: Optional[float],
+    ) -> None:
+        sig = decision.signals if isinstance(decision.signals, dict) else {}
+        sig["rule_confidence"] = (
+            round(finite_float(rule_confidence_before_ml, 0.0), 4)
+            if rule_confidence_before_ml is not None
+            else None
+        )
+        sig["final_confidence"] = round(finite_float(decision.confidence, 0.0), 4)
+        sig["confidence_source"] = str(sig.get("final_source") or "rule_only")
+
+        cycle_debug = sig.get("cycle_debug")
+        if isinstance(cycle_debug, dict):
+            cycle_debug["rule_confidence"] = sig["rule_confidence"]
+            cycle_debug["ml_confidence"] = sig.get("ml_confidence")
+            cycle_debug["final_confidence"] = sig["final_confidence"]
+            cycle_debug["confidence_source"] = sig["confidence_source"]
+
+        cycle_envelope = sig.get("cycle_envelope")
+        if isinstance(cycle_envelope, dict):
+            cycle_envelope["rule_confidence"] = sig["rule_confidence"]
+            cycle_envelope["ml_confidence"] = sig.get("ml_confidence")
+            cycle_envelope["final_confidence"] = sig["final_confidence"]
+            cycle_envelope["confidence_source"] = sig["confidence_source"]
+
         decision.signals = sig
 
     def _get_open_position(self, symbol: str) -> Optional[Position]:
@@ -800,9 +841,7 @@ class AutoTradeEngine:
         if not ml_signal:
             return rule_signal
 
-        prioritize_th = float(
-            getattr(self.settings, "ml_prioritize_threshold", 0.80)
-        )
+        prioritize_th = float(getattr(self.settings, "ml_prioritize_threshold", 0.80))
         override_th = float(getattr(self.settings, "ml_override_threshold", 0.70))
         agree_th = float(getattr(self.settings, "ml_agree_threshold", 0.70))
 
@@ -852,9 +891,7 @@ class AutoTradeEngine:
                 metadata={"rule": rule_signal.metadata, "ml": ml_signal.metadata},
             )
 
-        abs_floor = float(
-            getattr(self.settings, "ml_absolute_min_confidence", 0.50)
-        )
+        abs_floor = float(getattr(self.settings, "ml_absolute_min_confidence", 0.50))
         # Directional conflict (BUY vs SELL): let ML win below override threshold but above safety floor
         if (
             rule_signal.signal in (SignalType.BUY, SignalType.SELL)
@@ -992,17 +1029,10 @@ class AutoTradeEngine:
         from src.risk.position_sizing import compute_position_size
 
         max_pos_pct = float(
-            risk_pct
-            if risk_pct is not None
-            else self.risk_config.max_position_pct
+            risk_pct if risk_pct is not None else self.risk_config.max_position_pct
         )
         rp = float(self.settings.max_risk_per_trade)
-        if (
-            stop_loss is not None
-            and stop_loss > 0
-            and price > 0
-            and stop_loss < price
-        ):
+        if stop_loss is not None and stop_loss > 0 and price > 0 and stop_loss < price:
             out = compute_position_size(
                 equity=balance,
                 entry_price=price,
@@ -1256,7 +1286,9 @@ class AutoTradeEngine:
                 try:
                     ml_out = self._generate_ml_signal(df)
                 except Exception as e:
-                    self._log_event("ERROR", "ml", f"ML prediction failed: {e}", symbol=symbol)
+                    self._log_event(
+                        "ERROR", "ml", f"ML prediction failed: {e}", symbol=symbol
+                    )
                     decision.signals["ml_prediction_error"] = str(e)
                     return self._ml_strict_abort_trading_cycle(
                         decision=decision,
@@ -1426,7 +1458,9 @@ class AutoTradeEngine:
 
             open_position = self._get_open_position(symbol)
 
-            re_for_gate = bool(ml_context.get("runtime_eligible")) if self.ml_enabled else False
+            re_for_gate = (
+                bool(ml_context.get("runtime_eligible")) if self.ml_enabled else False
+            )
             if not self.ml_enabled:
                 ml_ok_gate = True
             elif not re_for_gate:
@@ -1451,9 +1485,7 @@ class AutoTradeEngine:
                     failed = gate_eval.get("failed_gates") or []
                     if failed:
                         decision.action = SignalAction.HOLD
-                        decision.reason = (
-                            f"[STRICT_GATE] {failed} | {decision.reason}"
-                        )
+                        decision.reason = f"[STRICT_GATE] {failed} | {decision.reason}"
 
             rt_mode = resolve_runtime_mode(
                 ml_enabled=self.ml_enabled,
@@ -1496,6 +1528,10 @@ class AutoTradeEngine:
                 ),
                 cooldown_blocked=False,
             )
+            self._attach_confidence_audit_fields(
+                decision,
+                rule_confidence_before_ml=rule_confidence_before_ml,
+            )
 
             # Audit log: pipeline visibility for diagnostics (rule / ML / final / source)
             source = decision.signals.get("final_source", "?")
@@ -1535,29 +1571,30 @@ class AutoTradeEngine:
 
             if decision.action == SignalAction.BUY and not open_position:
                 fs = str(decision.signals.get("final_source", ""))
-                if self.ml_enabled and ml_out is not None and fs in (
-                    "ml_prioritize",
-                    "ml_override",
-                    "combined",
-                    "ml_hold_breakout",
-                    "ml_moderate_influence",
+                if (
+                    self.ml_enabled
+                    and ml_out is not None
+                    and fs
+                    in (
+                        "ml_prioritize",
+                        "ml_override",
+                        "combined",
+                        "ml_hold_breakout",
+                        "ml_moderate_influence",
+                    )
                 ):
                     abs_min = float(
                         getattr(self.settings, "ml_absolute_min_confidence", 0.50)
                     )
                     thr = max(
                         abs_min,
-                        float(
-                            getattr(self.settings, "ml_min_trade_confidence", 0.55)
-                        ),
+                        float(getattr(self.settings, "ml_min_trade_confidence", 0.55)),
                     )
                     if float(ml_out.confidence) < abs_min:
                         decision.signals["ml_execution_gate"] = (
                             f"blocked_ml_conf_{float(ml_out.confidence):.3f}<{abs_min}"
                         )
-                        self._save_decision(
-                            decision, symbol, timeframe, executed=False
-                        )
+                        self._save_decision(decision, symbol, timeframe, executed=False)
                         return TradeResult(
                             success=True,
                             executed=False,
@@ -1572,9 +1609,7 @@ class AutoTradeEngine:
                         decision.signals["ml_execution_gate"] = (
                             f"blocked_ml_conf_{float(ml_out.confidence):.3f}<{thr}"
                         )
-                        self._save_decision(
-                            decision, symbol, timeframe, executed=False
-                        )
+                        self._save_decision(decision, symbol, timeframe, executed=False)
                         return TradeResult(
                             success=True,
                             executed=False,
@@ -1585,9 +1620,7 @@ class AutoTradeEngine:
                             ),
                             price=current_price,
                         )
-                adx_min = float(
-                    getattr(self.settings, "ml_min_adx_for_trade", 0) or 0
-                )
+                adx_min = float(getattr(self.settings, "ml_min_adx_for_trade", 0) or 0)
                 if adx_min > 0 and float(decision.adx) < adx_min:
                     decision.signals["market_filter"] = "low_adx"
                     self._save_decision(decision, symbol, timeframe, executed=False)
@@ -1647,9 +1680,7 @@ class AutoTradeEngine:
                     if hnote:
                         decision.signals["hybrid_risk"] = hnote
                     if effective_risk is not None and effective_risk <= 0:
-                        self._save_decision(
-                            decision, symbol, timeframe, executed=False
-                        )
+                        self._save_decision(decision, symbol, timeframe, executed=False)
                         return TradeResult(
                             success=True,
                             executed=False,

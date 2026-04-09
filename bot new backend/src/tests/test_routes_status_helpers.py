@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import json
 
 from src.api.routes_status import _attach_decisions_to_positions, _bucket_metrics
+from src.api.routes_stats import _aggregate_by_symbol
 
 
 def _decision(
@@ -146,3 +147,22 @@ def test_bucket_metrics_returns_requested_summary_fields():
     assert metrics["average_return_per_trade_usdt"] > 4
     assert metrics["average_return_per_trade_pct"] > 0
     assert metrics["ml_changed_action_count"] == 2
+
+
+def test_aggregate_by_symbol_includes_non_rule_only_sources():
+    row = SimpleNamespace(
+        symbol="BTCUSDT",
+        action="BUY",
+        confidence=0.81,
+        signals_json=json.dumps(
+            {
+                "final_source": "ml_override",
+                "ml_confidence": 0.91,
+            }
+        ),
+    )
+
+    grouped = _aggregate_by_symbol([row], [])
+
+    assert grouped["BTC"]["final_source_counts"]["ml_override"] == 1
+    assert grouped["BTC"]["non_rule_only_sources"]["ml_override"] == 1

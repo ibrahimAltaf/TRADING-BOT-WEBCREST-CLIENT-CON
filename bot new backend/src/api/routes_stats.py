@@ -1,4 +1,5 @@
 """Aggregated trading / ML performance + live proof + alerts."""
+
 from __future__ import annotations
 
 import json
@@ -89,21 +90,11 @@ def _aggregate_decisions(rows: List[TradingDecisionLog]) -> Dict[str, Any]:
     n = len(rows) or 1
     ml_pct = round(100.0 * ml_ok / n, 2)
     avg_conf = round(statistics.mean(confs), 4) if confs else None
-    avg_ml_confidence = (
-        round(statistics.mean(ml_confs), 4) if ml_confs else None
-    )
-    high_07 = (
-        sum(1 for x in ml_confs if x > 0.7) / len(ml_confs) if ml_confs else None
-    )
-    high_08 = (
-        sum(1 for x in ml_confs if x > 0.8) / len(ml_confs) if ml_confs else None
-    )
-    high_confidence_ratio = (
-        round(float(high_07), 4) if high_07 is not None else None
-    )
-    buy_sell_ratio = (
-        round(buy_c / max(sell_c, 1), 2) if sell_c else float(buy_c or 0)
-    )
+    avg_ml_confidence = round(statistics.mean(ml_confs), 4) if ml_confs else None
+    high_07 = sum(1 for x in ml_confs if x > 0.7) / len(ml_confs) if ml_confs else None
+    high_08 = sum(1 for x in ml_confs if x > 0.8) / len(ml_confs) if ml_confs else None
+    high_confidence_ratio = round(float(high_07), 4) if high_07 is not None else None
+    buy_sell_ratio = round(buy_c / max(sell_c, 1), 2) if sell_c else float(buy_c or 0)
     return {
         "buy_count": buy_c,
         "sell_count": sell_c,
@@ -125,11 +116,7 @@ def _build_alerts(agg: Dict[str, Any], n_trades: int) -> List[Dict[str, Any]]:
     alerts: List[Dict[str, Any]] = []
     ml_pct = float(agg.get("ml_used_percentage") or 0)
     hold_c = int(agg.get("hold_count") or 0)
-    total = (
-        int(agg.get("buy_count") or 0)
-        + int(agg.get("sell_count") or 0)
-        + hold_c
-    )
+    total = int(agg.get("buy_count") or 0) + int(agg.get("sell_count") or 0) + hold_c
     if total and ml_pct < 10.0:
         alerts.append(
             {
@@ -205,6 +192,11 @@ def _aggregate_by_symbol(
             "hold_count": agg["hold_count"],
             "avg_confidence": agg["avg_confidence"],
             "final_source_counts": agg.get("final_source_counts", {}),
+            "non_rule_only_sources": {
+                k: v
+                for k, v in agg.get("final_source_counts", {}).items()
+                if k not in ("rule_only", "rule_only_ml_disabled", "rule_based", "")
+            },
             "live_pnl_sum_usdt": round(pnl_sum, 4),
             "closed_trades": len(pc),
             "decisions_in_sample": len(by_rows.get(sym, [])),
@@ -333,7 +325,8 @@ def live_proof(limit: int = 200) -> Dict[str, Any]:
             "ml_used_percentage": agg["ml_used_percentage"],
             "avg_ml_confidence": agg.get("avg_ml_confidence"),
             "high_confidence_ratio": agg.get("high_confidence_ratio"),
-            "buy_sell_ratio": agg.get("buy_count", 0) / max(agg.get("sell_count", 1), 1),
+            "buy_sell_ratio": agg.get("buy_count", 0)
+            / max(agg.get("sell_count", 1), 1),
             "avg_confidence": agg["avg_confidence"],
             "runtime_status": "api_ok",
             "ml_status_summary": ml_status_summary,

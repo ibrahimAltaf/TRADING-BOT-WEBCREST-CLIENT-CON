@@ -54,6 +54,42 @@ def _asset_to_usdt_symbol(asset: str) -> Optional[str]:
     return f"{a}USDT"
 
 
+def _confidence_fields(parsed_signals: Dict[str, Any]) -> Dict[str, Any]:
+    cycle_debug = (
+        parsed_signals.get("cycle_debug")
+        if isinstance(parsed_signals.get("cycle_debug"), dict)
+        else {}
+    )
+    cycle_envelope = (
+        parsed_signals.get("cycle_envelope")
+        if isinstance(parsed_signals.get("cycle_envelope"), dict)
+        else {}
+    )
+    return {
+        "rule_confidence": parsed_signals.get(
+            "rule_confidence",
+            cycle_debug.get("rule_confidence", cycle_envelope.get("rule_confidence")),
+        ),
+        "ml_confidence": parsed_signals.get(
+            "ml_confidence",
+            cycle_debug.get("ml_confidence", cycle_envelope.get("ml_confidence")),
+        ),
+        "final_confidence": parsed_signals.get(
+            "final_confidence",
+            cycle_debug.get("final_confidence", cycle_envelope.get("final_confidence")),
+        ),
+        "confidence_source": parsed_signals.get(
+            "confidence_source",
+            cycle_debug.get(
+                "confidence_source",
+                cycle_envelope.get(
+                    "confidence_source", parsed_signals.get("final_source")
+                ),
+            ),
+        ),
+    }
+
+
 # === Balance Endpoints ===
 
 
@@ -773,8 +809,10 @@ def get_open_positions(symbol: Optional[str] = None, db: Session = Depends(get_d
                 ),
                 "unrealized_pnl_pct": (
                     (
-                        ((px(p.symbol) - float(p.entry_price or 0))
-                        / float(p.entry_price or 1))
+                        (
+                            (px(p.symbol) - float(p.entry_price or 0))
+                            / float(p.entry_price or 1)
+                        )
                         * 100.0
                     )
                     if float(p.entry_price or 0) > 0
@@ -859,17 +897,17 @@ def get_recent_logs(
 
     if not all_symbols:
         scope = (symbol or _settings.trade_symbol).strip().upper()
-        query = query.filter(
-            or_(EventLog.symbol == scope, EventLog.symbol.is_(None))
-        )
+        query = query.filter(or_(EventLog.symbol == scope, EventLog.symbol.is_(None)))
 
     logs = query.order_by(EventLog.ts.desc()).limit(limit).all()
 
     return {
         "ok": True,
-        "scope": "all_symbols"
-        if all_symbols
-        else (symbol or _settings.trade_symbol).strip().upper(),
+        "scope": (
+            "all_symbols"
+            if all_symbols
+            else (symbol or _settings.trade_symbol).strip().upper()
+        ),
         "count": len(logs),
         "logs": [
             {
@@ -928,6 +966,7 @@ def get_recent_decisions(
                 parsed_signals = json.loads(d.signals_json)
             except Exception:
                 parsed_signals = {}
+        confidence_fields = _confidence_fields(parsed_signals)
 
         rule_signal = getattr(d, "rule_signal", None) or parsed_signals.get(
             "rule_signal"
@@ -935,7 +974,7 @@ def get_recent_decisions(
         ml_signal = getattr(d, "ml_signal", None) or parsed_signals.get("ml_signal")
         ml_confidence = getattr(d, "ml_confidence", None)
         if ml_confidence is None:
-            ml_confidence = parsed_signals.get("ml_confidence")
+            ml_confidence = confidence_fields.get("ml_confidence")
 
         combined_signal = getattr(d, "combined_signal", None) or parsed_signals.get(
             "combined_signal"
@@ -1000,6 +1039,9 @@ def get_recent_decisions(
                     if isinstance(ml_confidence, (int, float))
                     else ml_confidence
                 ),
+                "rule_confidence": confidence_fields.get("rule_confidence"),
+                "final_confidence": confidence_fields.get("final_confidence"),
+                "confidence_source": confidence_fields.get("confidence_source"),
                 "combined_signal": combined_signal,
                 "override_reason": override_reason,
                 "final_action": final_action,
@@ -1054,6 +1096,7 @@ def get_latest_decision(
         }
 
     parsed_signals = json.loads(decision.signals_json) if decision.signals_json else {}
+    confidence_fields = _confidence_fields(parsed_signals)
 
     return {
         "ok": True,
@@ -1068,9 +1111,7 @@ def get_latest_decision(
             "symbol": decision.symbol,
             "timeframe": decision.timeframe,
             "regime": decision.regime,
-            "price": (
-                round(decision.price, 2) if decision.price is not None else None
-            ),
+            "price": (round(decision.price, 2) if decision.price is not None else None),
             "timestamp": decision.ts.isoformat() if decision.ts else None,
             "indicators": {
                 "adx": round(decision.adx, 2) if decision.adx else None,
@@ -1100,6 +1141,10 @@ def get_latest_decision(
             "ml_alignment": parsed_signals.get("ml_context", {}),
             "executed": decision.executed,
             "order_id": decision.order_id,
+            "rule_confidence": confidence_fields.get("rule_confidence"),
+            "ml_confidence": confidence_fields.get("ml_confidence"),
+            "final_confidence": confidence_fields.get("final_confidence"),
+            "confidence_source": confidence_fields.get("confidence_source"),
             "cycle_debug": parsed_signals.get("cycle_debug"),
             "final_source": parsed_signals.get("final_source"),
         },
@@ -1183,9 +1228,7 @@ def exchange_proof(symbol: Optional[str] = None, db: Session = Depends(get_db)):
     # --- logs (symbol-scoped; do not mix pairs) ---
     recent_logs_res: Dict[str, Any] = {}
     try:
-        recent_logs_res = get_recent_logs(
-            symbol=selected_symbol, limit=50, db=db
-        )
+        recent_logs_res = get_recent_logs(symbol=selected_symbol, limit=50, db=db)
     except Exception as e:
         section_errors["logs"] = str(e)[:300]
 
@@ -1251,9 +1294,11 @@ def exchange_proof(symbol: Optional[str] = None, db: Session = Depends(get_db)):
             "all": balances_res.get("balances", []),
         },
         "decision_visibility": {
-            "latest": latest_decision_res.get("decision")
-            if latest_decision_res.get("ok")
-            else None,
+            "latest": (
+                latest_decision_res.get("decision")
+                if latest_decision_res.get("ok")
+                else None
+            ),
             "recent_count": int(recent_decisions_res.get("count", 0)),
             "recent": recent_decisions_res.get("decisions", []),
             "action_counts": {
@@ -1276,7 +1321,9 @@ def exchange_proof(symbol: Optional[str] = None, db: Session = Depends(get_db)):
         "trades": {
             "count": int(trades_res.get("count", 0)),
             "recent": trades_res.get("trades", []),
-            "last_trade_ts": last_trade.ts.isoformat() if last_trade and last_trade.ts else None,
+            "last_trade_ts": (
+                last_trade.ts.isoformat() if last_trade and last_trade.ts else None
+            ),
         },
         "performance": {
             "realized_pnl_usdt": pnl_usdt,
@@ -1285,6 +1332,8 @@ def exchange_proof(symbol: Optional[str] = None, db: Session = Depends(get_db)):
         "logs": {
             "recent_count": int(recent_logs_res.get("count", 0)),
             "recent": recent_logs_res.get("logs", []),
-            "last_event_ts": last_event.ts.isoformat() if last_event and last_event.ts else None,
+            "last_event_ts": (
+                last_event.ts.isoformat() if last_event and last_event.ts else None
+            ),
         },
     }

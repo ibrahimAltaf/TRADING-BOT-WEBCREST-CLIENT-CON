@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from src.api import routes_exchange
+from src.api import routes_stats
 from src.api import routes_status
 from src.db.base import Base
 from src.db.models import EventLog, TradingDecisionLog
@@ -49,12 +50,14 @@ def patched_session(memory_session_factory):
     orig = db_session.SessionLocal
     db_session.SessionLocal = memory_session_factory
     routes_exchange.SessionLocal = memory_session_factory
+    routes_stats.SessionLocal = memory_session_factory
     routes_status.SessionLocal = memory_session_factory
 
     yield memory_session_factory
 
     db_session.SessionLocal = orig
     routes_exchange.SessionLocal = orig
+    routes_stats.SessionLocal = orig
     routes_status.SessionLocal = orig
 
 
@@ -75,9 +78,17 @@ def _decision_row(
         "final_source": final_source,
         "rule_signal": "HOLD",
         "ml_signal": None,
+        "rule_confidence": 0.42,
+        "ml_confidence": None,
+        "final_confidence": 0.5,
+        "confidence_source": final_source,
         "cycle_debug": {
             "runtime_mode": runtime_mode,
             "hold_kind": hold_kind,
+            "rule_confidence": 0.42,
+            "ml_confidence": None,
+            "final_confidence": 0.5,
+            "confidence_source": final_source,
         },
     }
     return TradingDecisionLog(
@@ -181,13 +192,17 @@ class TestAiObservabilityContract:
                     symbol="BTCUSDT",
                     ts=base + timedelta(minutes=i),
                     final_source=fs,
-                    runtime_mode="ai_degraded" if fs == "ml_strict_failure" else "ai_active",
+                    runtime_mode=(
+                        "ai_degraded" if fs == "ml_strict_failure" else "ai_active"
+                    ),
                 )
             )
         db.commit()
         db.close()
 
-        r = client.get("/exchange/performance/ai-observability?symbol=BTCUSDT&limit=100")
+        r = client.get(
+            "/exchange/performance/ai-observability?symbol=BTCUSDT&limit=100"
+        )
         assert r.status_code == 200
         data = r.json()
         assert data["ok"] is True
@@ -202,7 +217,8 @@ class TestAiObservabilityContract:
         assert "final_source_counts" in data
         fs_counts = data["final_source_counts"]
         assert (
-            fs_counts.get("ml_strict_failure", 0) + fs_counts.get("ml_runtime_failure", 0)
+            fs_counts.get("ml_strict_failure", 0)
+            + fs_counts.get("ml_runtime_failure", 0)
             >= 1
         )
 
@@ -225,3 +241,43 @@ def test_latest_decision_normalizes_symbol(client, patched_session):
     assert body["ok"] is True
     assert body["decision"]["symbol"] == "BTCUSDT"
     assert body["decision"]["final_source"] == "rule_only"
+    assert body["decision"]["confidence_source"] == "rule_only"
+
+
+def test_recent_decisions_surface_confidence_fields(client, patched_session):
+    db = patched_session()
+    db.add(
+        _decision_row(
+            symbol="BTCUSDT",
+            ts=datetime(2025, 1, 6, 1, 0, 0),
+            final_source="ml_override",
+        )
+    )
+    db.commit()
+    db.close()
+
+    r = client.get("/exchange/decisions/recent?symbol=BTCUSDT&limit=5")
+    assert r.status_code == 200
+    decision = r.json()["decisions"][0]
+    assert decision["rule_confidence"] == 0.42
+    assert decision["final_confidence"] == 0.5
+    assert decision["confidence_source"] == "ml_override"
+
+
+def test_stats_performance_surfaces_non_rule_only_sources(client, patched_session):
+    db = patched_session()
+    db.add(
+        _decision_row(
+            symbol="BTCUSDT",
+            ts=datetime(2025, 1, 7, 1, 0, 0),
+            final_source="ml_override",
+        )
+    )
+    db.commit()
+    db.close()
+
+    r = client.get("/stats/performance?limit_decisions=50")
+    assert r.status_code == 200
+    by_symbol = r.json()["by_symbol"]
+    assert by_symbol["BTC"]["final_source_counts"]["ml_override"] == 1
+    assert by_symbol["BTC"]["non_rule_only_sources"]["ml_override"] == 1
