@@ -31,13 +31,13 @@ Production-oriented monorepo for an **AI-assisted cryptocurrency trading platfor
 
 **Technologies**
 
-| Layer | Stack |
-|--------|--------|
-| API | Python 3, **FastAPI**, Uvicorn, SQLAlchemy, Pydantic |
-| ML | TensorFlow/Keras (`model.keras`), StandardScaler (`scaler.json`), metadata (`meta.json`) |
-| Data | **PostgreSQL** |
-| Exchange | Binance Spot (testnet or live), signed requests with clock sync |
-| UI | **React 19**, **Vite**, TypeScript, TanStack Query, Tailwind |
+| Layer    | Stack                                                                                    |
+| -------- | ---------------------------------------------------------------------------------------- |
+| API      | Python 3, **FastAPI**, Uvicorn, SQLAlchemy, Pydantic                                     |
+| ML       | TensorFlow/Keras (`model.keras`), StandardScaler (`scaler.json`), metadata (`meta.json`) |
+| Data     | **PostgreSQL**                                                                           |
+| Exchange | Binance Spot (testnet or live), signed requests with clock sync                          |
+| UI       | **React 19**, **Vite**, TypeScript, TanStack Query, Tailwind                             |
 
 ---
 
@@ -88,12 +88,12 @@ Production-oriented monorepo for an **AI-assisted cryptocurrency trading platfor
 
 **Meaning of key labels**
 
-| Label | Meaning |
-|--------|---------|
-| **ml_override** | ML direction and confidence exceed **`ML_OVERRIDE_THRESHOLD`** so ML drives the fused outcome when rules would differ (per engine logic). |
-| **ml_prioritize** | Very high ML confidence (≥ **`ML_PRIORITIZE_THRESHOLD`**) takes precedence in the fusion path. |
+| Label                 | Meaning                                                                                                                                                                             |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **ml_override**       | ML direction and confidence exceed **`ML_OVERRIDE_THRESHOLD`** so ML drives the fused outcome when rules would differ (per engine logic).                                           |
+| **ml_prioritize**     | Very high ML confidence (≥ **`ML_PRIORITIZE_THRESHOLD`**) takes precedence in the fusion path.                                                                                      |
 | **ml_strict_failure** | Strict ML path required ML but model path invalid, artifacts missing, or ML pipeline failed in a way that triggers abort — **no silent rule-only fill-in** when strict rules apply. |
-| **engine_exception** | Unexpected engine-level failure; audited on the decision/log path for post-mortems. |
+| **engine_exception**  | Unexpected engine-level failure; audited on the decision/log path for post-mortems.                                                                                                 |
 
 ---
 
@@ -194,19 +194,40 @@ Additional useful routes: **`GET /status`**, **`GET /status/ml`**, **`GET /statu
 
 **Operational requirements before relying on production capital**
 
-| Requirement | Notes |
-|-------------|--------|
-| **Correct system time** | VPS/host NTP; avoids Binance signed-request failures. |
-| **Valid ML models** | Per-symbol **`SYMBOL_TIMEFRAME`** folders with all three artifacts; **`TRADE_TIMEFRAME`** must match on-disk layout for every scheduled symbol. |
-| **Live validation** | Smoke **`/status`**, **`/health/db`**, **`/status/model-health`**, and dashboard panels on the target environment. |
-| **Secrets and DB** | Strong **`JWT_SECRET`**, valid **`DATABASE_URL`**, non-committed **`.env`**. |
-| **Process model** | Single Uvicorn (or systemd) listener per port; avoid duplicate bind races on restart. |
+| Requirement             | Notes                                                                                                                                           |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Correct system time** | VPS/host NTP; avoids Binance signed-request failures.                                                                                           |
+| **Valid ML models**     | Per-symbol **`SYMBOL_TIMEFRAME`** folders with all three artifacts; **`TRADE_TIMEFRAME`** must match on-disk layout for every scheduled symbol. |
+| **Live validation**     | Smoke **`/status`**, **`/health/db`**, **`/status/model-health`**, and dashboard panels on the target environment.                              |
+| **Secrets and DB**      | Strong **`JWT_SECRET`**, valid **`DATABASE_URL`**, non-committed **`.env`**.                                                                    |
+| **Process model**       | Single Uvicorn (or systemd) listener per port; avoid duplicate bind races on restart.                                                           |
 
 The system is **ready for production testing** when the above are satisfied; financial risk remains the operator’s responsibility.
 
 ---
 
 ## 9. How to run the project
+
+### One-click setup (Windows)
+
+For a fully automated setup and launch of both backend and frontend, use the provided **start.cmd** script:
+
+```cmd
+start.cmd
+```
+
+This script will:
+
+- Set up the backend Python virtual environment (if missing)
+- Install backend dependencies
+- Install frontend dependencies (if missing)
+- Start the backend (Uvicorn/FastAPI) and frontend (Vite/React) servers in separate terminals
+
+> **Note:** Edit your environment variables (e.g. `.env` for backend, `production.env.example` for frontend) as needed before running in production.
+
+---
+
+### Manual steps (advanced)
 
 **Backend**
 
@@ -253,12 +274,65 @@ curl -s http://127.0.0.1:8000/health/db
 
 ## 11. Repository layout and docs
 
-| Path | Role |
-|------|------|
-| `bot new backend/` | FastAPI app (`src/main.py`), ML, live engine, scheduler, tests |
-| `trading-bot-dashboard/` | React dashboard |
-| `bot new backend/docs/` | VPS deployment guides (`VPS-DEPLOY.md`, `VPS-VAR-WWW.md`, etc.) |
-| `bot new backend/models/` | Trained artifacts per `SYMBOL_TIMEFRAME` |
+| Path                      | Role                                                            |
+| ------------------------- | --------------------------------------------------------------- |
+| `bot new backend/`        | FastAPI app (`src/main.py`), ML, live engine, scheduler, tests  |
+| `trading-bot-dashboard/`  | React dashboard                                                 |
+| `bot new backend/docs/`   | VPS deployment guides (`VPS-DEPLOY.md`, `VPS-VAR-WWW.md`, etc.) |
+| `bot new backend/models/` | Trained artifacts per `SYMBOL_TIMEFRAME`                        |
+
+---
+
+## One-click project setup script: `start.cmd`
+
+For convenience, a Windows batch script is provided for one-click setup and launch. Here is what it does:
+
+```batch
+@echo off
+setlocal
+
+echo ==========================================
+echo Setting up backend virtual environment...
+echo ==========================================
+
+cd /d "%~dp0bot new backend"
+
+IF NOT EXIST ".venv" (
+	echo Creating .venv...
+	python -m venv .venv
+)
+
+echo Activating .venv and installing backend dependencies...
+call .venv\Scripts\activate.bat
+pip install -r requirements.txt
+
+echo ==========================================
+echo Installing frontend dependencies...
+echo ==========================================
+
+cd /d "%~dp0trading-bot-dashboard"
+
+IF NOT EXIST "node_modules" (
+	call npm install
+)
+
+echo ==========================================
+echo Starting backend...
+echo ==========================================
+
+start "Backend Server" cmd /k "cd /d ""%~dp0bot new backend"" && call .venv\Scripts\activate.bat && uvicorn src.main:app --reload"
+
+echo ==========================================
+echo Starting frontend...
+echo ==========================================
+
+start "Frontend Server" cmd /k "cd /d ""%~dp0trading-bot-dashboard"" && npm run dev"
+
+echo Both servers started 🚀
+pause
+```
+
+This script is located at the root of the repository as `start.cmd`.
 
 **Deploy note:** On Linux servers, prefer a path **without spaces** (e.g. symlink `bot-new-backend`) for systemd and tooling.
 

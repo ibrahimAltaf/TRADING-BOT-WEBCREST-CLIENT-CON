@@ -875,12 +875,34 @@ class AutoTradeEngine:
                 metadata=ml_signal.metadata,
             )
 
-        if rule_signal.signal == ml_signal.signal and ml_signal.confidence >= agree_th:
+        if rule_signal.signal == ml_signal.signal and rule_signal.signal in (
+            SignalType.BUY,
+            SignalType.SELL,
+        ):
             combined_conf = (rule_signal.confidence + ml_signal.confidence) / 2
             self._log_event(
                 "INFO",
                 "signal",
-                f"Signals agree: {rule_signal.signal.value} @ {combined_conf:.2f}",
+                f"Signals agree (no threshold): {rule_signal.signal.value} @ {combined_conf:.2f}",
+            )
+            return TradeSignal(
+                signal=rule_signal.signal,
+                confidence=combined_conf,
+                price=rule_signal.price,
+                timestamp=rule_signal.timestamp,
+                source="combined",
+                metadata={"rule": rule_signal.metadata, "ml": ml_signal.metadata},
+            )
+        if (
+            rule_signal.signal == ml_signal.signal
+            and ml_signal.signal == SignalType.HOLD
+            and ml_signal.confidence >= agree_th
+        ):
+            combined_conf = (rule_signal.confidence + ml_signal.confidence) / 2
+            self._log_event(
+                "INFO",
+                "signal",
+                f"Signals agree (HOLD): {rule_signal.signal.value} @ {combined_conf:.2f}",
             )
             return TradeSignal(
                 signal=rule_signal.signal,

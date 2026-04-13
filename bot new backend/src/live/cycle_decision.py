@@ -1,6 +1,7 @@
 """
 Production decision envelope: one structured object per cycle (audit / ML / rules).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -87,12 +88,9 @@ def evaluate_entry_gates(
 ) -> Dict[str, Any]:
     """Transparent gate booleans + which failed (for HOLD diagnostics)."""
     trend_ok = bool(adx >= adx_threshold * 0.65) or (ema_fast != ema_slow)
-    momentum_ok = (
-        (rsi_buy_min - 5) <= rsi <= (rsi_buy_max + 5)
-        or rsi < 35
-        or rsi > 65
-    )
-    volatility_ok = atr_vol_threshold * 0.12 <= atr_pct <= atr_vol_threshold * 4.5
+    momentum_ok = (rsi_buy_min - 5) <= rsi <= (rsi_buy_max + 5) or rsi < 35 or rsi > 65
+
+    volatility_ok = atr_vol_threshold * 0.08 <= atr_pct <= atr_vol_threshold * 6.0
     gates = {
         "trend_ok": trend_ok,
         "momentum_ok": momentum_ok,
