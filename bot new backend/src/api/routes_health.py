@@ -188,7 +188,7 @@ def startup_check() -> Dict[str, Any]:
 
     This is designed to answer:
     - backend alive?
-    - port 8000 reachable? (implicit if this route returns)
+    - API port reachable? (implicit if this route returns)
     - scheduler initialized?
     - database connected?
     - exchange connected?
