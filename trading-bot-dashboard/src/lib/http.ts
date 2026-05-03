@@ -7,8 +7,8 @@ export type ApiError = {
   data?: unknown;
 };
 
-// Live VPS API via nginx (:80 /api → backend). Never call :8000 from the browser.
-const DEFAULT_API_BASE = "http://147.93.96.42/api";
+// Production: same-origin `/api` (nginx proxies to uvicorn on 127.0.0.1:8000). Never call :8000 from the browser.
+const DEFAULT_API_BASE = "/api";
 
 /** Old builds baked `http://host:8000` — rewrite to same host `/api` so nginx proxy works. */
 function normalizeApiBase(raw: string): string {
