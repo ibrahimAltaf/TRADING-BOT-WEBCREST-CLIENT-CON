@@ -4,7 +4,7 @@ inspects every field the client asked for.
 """
 import json, urllib.request, sys, time
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:6000"
 
 def get(path):
     return json.loads(urllib.request.urlopen(f"{BASE}{path}", timeout=120).read())

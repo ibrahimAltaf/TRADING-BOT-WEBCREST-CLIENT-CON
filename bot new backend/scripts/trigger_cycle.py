@@ -3,7 +3,7 @@ import json
 import urllib.request
 import sys
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:6000"
 
 for sym in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
     data = json.dumps({"symbol": sym, "timeframe": "5m"}).encode()

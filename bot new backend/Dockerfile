@@ -21,7 +21,7 @@ COPY . .
 
 RUN chmod +x scripts/run_api.sh scripts/gunicorn_start.sh || true
 
-EXPOSE 8000
+EXPOSE 6000
 
 # WORKDIR=/app → project root; config resolves models/ and .env* from here (not host cwd).
 CMD ["./scripts/run_api.sh"]

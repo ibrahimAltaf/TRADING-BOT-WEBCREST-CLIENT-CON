@@ -235,12 +235,13 @@ def _startup_ml_model_check() -> None:
     except Exception as exc:
         print(f"[STARTUP][ML][ERROR] model resolution failed: {exc}")
 
-# Local dev + Vercel preview; VPS HTTP dashboard (port 80) calling API on :8000 is cross-origin — must be listed.
-# Note: http://localhost:5173 and http://127.0.0.1:5173 are different browser origins — list both.
+# Local dev + Vercel preview; VPS HTTP dashboard (port 80) calling API on another port is cross-origin — list origins.
+# Vite dev default port 7000 (see trading-bot-dashboard/vite.config.ts).
 # Append CORS_ORIGINS (comma-separated) in .env for extra domains (HTTPS, staging, etc.).
 _origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
+    "http://localhost:7000",
+    "http://127.0.0.1:7000",
+    "http://147.93.96.42:7000",
     "http://localhost:4173",
     "http://127.0.0.1:4173",
     "https://trading-bot-dashboard-delta.vercel.app",
@@ -251,7 +252,7 @@ if _extra:
     _origins = _origins + [o.strip() for o in _extra.split(",") if o.strip()]
 origins = _origins
 
-# Dev / LAN: phone testing via http://192.168.x.x:5173 — match without listing every IP.
+# Dev / LAN: phone testing via http://192.168.x.x:7000 — match without listing every IP.
 _cors_regex = None
 if os.getenv("APP_ENV", "dev").strip().lower() in ("dev", "development"):
     _cors_regex = r"https?://(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3})(:\d+)?"

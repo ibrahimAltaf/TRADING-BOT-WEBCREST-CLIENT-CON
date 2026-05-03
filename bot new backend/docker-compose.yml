@@ -6,19 +6,19 @@ services:
     container_name: trading-api
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "6000:6000"
     env_file:
       - .env.production
     environment:
       PYTHONPATH: /app
       HOST: 0.0.0.0
-      PORT: "8000"
+      PORT: "6000"
     volumes:
       - ./data:/app/data
       - ./models:/app/models
     command: ["./scripts/run_api.sh"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/status')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6000/status')"]
       interval: 30s
       timeout: 10s
       retries: 3

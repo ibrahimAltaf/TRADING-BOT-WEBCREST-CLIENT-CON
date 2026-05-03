@@ -8,7 +8,7 @@ Follow these steps to run the project on your machine. The backend folder name c
 
 | Tool | Recommended version |
 |------|---------------------|
-| Python | **3.11 or 3.12** (for TensorFlow wheels; avoid 3.14 until TF supports it reliably) |
+| Python | **3.11 or 3.12** (TensorFlow wheels). **Ubuntu 24.04** ships **3.12** only — use `python3` / `python3-venv`, not `python3.11` from apt. |
 | Node.js | **18+** (LTS) |
 | npm | Bundled with Node |
 
@@ -21,7 +21,7 @@ Follow these steps to run the project on your machine. The backend folder name c
 ```bash
 cd "/path/to/TRADING-BOT-WEBCREST-CLIENT-CON/bot new backend"
 
-python3.11 -m venv .venv
+python3 -m venv .venv        # Ubuntu 24.04: use python3 (3.12). macOS/Homebrew: python3.11 ok too.
 source .venv/bin/activate    # Windows: .venv\Scripts\activate
 
 pip install --upgrade pip
@@ -80,22 +80,22 @@ export PYTHONPATH=.
 # optional:
 # export DATABASE_URL="sqlite:///$(pwd)/data/local.db"
 
-uvicorn src.main:app --reload --host 127.0.0.1 --port 8000
+uvicorn src.main:app --reload --host 127.0.0.1 --port 6000
 ```
 
 **Quick check (second terminal):**
 
 ```bash
-curl -s http://127.0.0.1:8000/status | head
-curl -s http://127.0.0.1:8000/docs
+curl -s http://127.0.0.1:6000/status | head
+curl -s http://127.0.0.1:6000/docs
 ```
 
 **Useful endpoints:**
 
-- `GET http://127.0.0.1:8000/status`
-- `GET http://127.0.0.1:8000/status/ml`
-- `GET http://127.0.0.1:8000/status/model-health`
-- `GET http://127.0.0.1:8000/exchange/ai-observability`
+- `GET http://127.0.0.1:6000/status`
+- `GET http://127.0.0.1:6000/status/ml`
+- `GET http://127.0.0.1:6000/status/model-health`
+- `GET http://127.0.0.1:6000/exchange/ai-observability`
 
 ---
 
@@ -110,11 +110,11 @@ npm install
 npm run dev
 ```
 
-Default UI: **http://localhost:5173** (or **http://127.0.0.1:5173**). To test from a phone on the same Wi‑Fi, use your PC’s LAN IP and port **5173** (Vite is configured with `host: true`).
+Default UI: **http://localhost:7000** (or **http://127.0.0.1:7000**). To test from a phone on the same Wi‑Fi, use your PC’s LAN IP and port **7000** (Vite is configured with `host: true`).
 
 ### 2.2 API base URL in development
 
-`vite.config.ts` proxies **`/api`** to **`http://127.0.0.1:8000`**.
+`vite.config.ts` proxies **`/api`** to **`http://127.0.0.1:6000`**.
 
 In dev mode, if `VITE_API_BASE_URL` is empty or points to a local URL, the app uses relative **`/api`** (same origin as the Vite dev server, so you avoid CORS issues).
 
@@ -133,10 +133,10 @@ Do not bake a production VPS URL into your local workflow. `trading-bot-dashboar
 
 | Terminal | Steps |
 |----------|--------|
-| **A — Backend** | `cd "…/bot new backend"` → `source .venv/bin/activate` → `export PYTHONPATH=.` → `uvicorn src.main:app --reload --host 127.0.0.1 --port 8000` |
+| **A — Backend** | `cd "…/bot new backend"` → `source .venv/bin/activate` → `export PYTHONPATH=.` → `uvicorn src.main:app --reload --host 127.0.0.1 --port 6000` |
 | **B — Frontend** | `cd "…/trading-bot-dashboard"` → `npm run dev` |
 
-Open **http://localhost:5173** in the browser. Frontend requests go to **`/api/...`**, which the dev server proxies to the backend on port **8000**.
+Open **http://localhost:7000** in the browser. Frontend requests go to **`/api/...`**, which the dev server proxies to the backend on port **6000**.
 
 ---
 
@@ -156,7 +156,7 @@ These settings are meant to work on **your laptop**, a **VPS**, and **Docker** w
 cd "/path/to/bot new backend"
 cp .env.example .env.production   # then edit with real secrets
 docker compose up -d --build
-curl -s http://127.0.0.1:8000/status/ml-resolution | head
+curl -s http://127.0.0.1:6000/status/ml-resolution | head
 ```
 
 `docker-compose.yml` mounts `./models` and `./data` so ML artifacts survive restarts.
@@ -165,7 +165,8 @@ curl -s http://127.0.0.1:8000/status/ml-resolution | head
 
 ```bash
 cd "/path/to/bot new backend"
-python3.11 -m venv .venv && source .venv/bin/activate
+apt install -y python3 python3-venv python3-pip build-essential   # if needed (Ubuntu)
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 chmod +x scripts/run_api.sh scripts/gunicorn_start.sh
 # Option A — uvicorn
@@ -174,9 +175,55 @@ chmod +x scripts/run_api.sh scripts/gunicorn_start.sh
 ./scripts/gunicorn_start.sh
 ```
 
-Optional **systemd** template: `bot new backend/deploy/systemd/trading-api.service.example` — set `WorkingDirectory` to your real backend path (avoid spaces in deploy paths on Linux, or quote carefully).
+### Hostinger VPS (Ubuntu 24.04) — after manual `uvicorn` works
 
-**Nginx** — Use `deploy/nginx-api-location.conf.example` so the browser talks to **`https://your-domain/api/...`** and nginx forwards to `127.0.0.1:8000`.
+Typical layout (no space in path): backend at **`/var/www/trading-bot-api`**. Put **`127.0.0.1:6000`** behind nginx (do not expose the API port publicly).
+
+1. **Own the tree** (if the service user is `www-data`):
+
+   ```bash
+   sudo chown -R www-data:www-data /var/www/trading-bot-api
+   ```
+
+2. **systemd** — create `/etc/systemd/system/trading-api.service`:
+
+   ```ini
+   [Unit]
+   Description=Trading bot FastAPI
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=www-data
+   Group=www-data
+   WorkingDirectory=/var/www/trading-bot-api
+   Environment=PYTHONPATH=/var/www/trading-bot-api
+   Environment=PATH=/var/www/trading-bot-api/.venv/bin:/usr/bin
+   Environment=TF_CPP_MIN_LOG_LEVEL=2
+   EnvironmentFile=-/var/www/trading-bot-api/.env.production
+   ExecStart=/var/www/trading-bot-api/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 6000
+   Restart=on-failure
+   RestartSec=5
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+   Then:
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now trading-api
+   sudo systemctl status trading-api
+   ```
+
+3. **Nginx** — merge `deploy/nginx-api-location.conf.example` so `location /api/` → `http://127.0.0.1:6000/`, then `sudo nginx -t && sudo systemctl reload nginx`.
+
+4. **Scheduler** — until you want live cycles on the server, set `LIVE_SCHEDULER_ENABLED=false` in `.env.production` (or turn off in app settings).
+
+Template file: `bot new backend/deploy/systemd/trading-api.service.example` (paths there are placeholders; match your server).
+
+**Nginx** — Use `deploy/nginx-api-location.conf.example` so the browser talks to **`https://your-domain/api/...`** and nginx forwards to `127.0.0.1:6000`.
 
 ### Frontend build on VPS / CI
 
@@ -214,7 +261,7 @@ The backend only runs the LSTM if **weight files** exist under `models/` (for ex
 2. **Or train real models** (needs network for Binance data):  
    `PYTHONPATH=. python scripts/train_multi_coin.py --interval 5m`
 
-3. **Check diagnostics:** `GET http://127.0.0.1:8000/status/ml` — fields `runtime_model_loaded`, `runtime_last_error`, and `hint_if_model_missing` explain the current state.
+3. **Check diagnostics:** `GET http://127.0.0.1:6000/status/ml` — fields `runtime_model_loaded`, `runtime_last_error`, and `hint_if_model_missing` explain the current state.
 
 `TRADE_TIMEFRAME` (e.g. `5m`) must match the folder suffix (`BTCUSDT_5m`). Folders like `lstm_v1/BTCUSDT_4h` are **not** used unless you set `ML_MODEL_VERSION=lstm_v1` **and** that folder contains actual weight files (not only JSON).
 
@@ -239,8 +286,8 @@ The backend only runs the LSTM if **weight files** exist under `models/` (for ex
 | Log: `stub bootstrap failed: No module named 'tensorflow'` | Install full dependencies from `requirements.txt`, or set **`ML_ENABLED=false`** temporarily if you only need API/UI smoke tests. |
 | Stub models not created | Ensure TensorFlow is installed and `ML_BOOTSTRAP_STUB=true`; read startup logs. |
 | Corporate proxy breaks Binance | For debugging only, try clearing proxies: `HTTP_PROXY=` `HTTPS_PROXY=` |
-| Dashboard shows API errors | Confirm the backend is up: `curl http://127.0.0.1:8000/status` |
-| CORS | In dev, use the Vite app at port **5173** with the `/api` proxy; don’t point the browser straight at `:8000` for the SPA. |
+| Dashboard shows API errors | Confirm the backend is up: `curl http://127.0.0.1:6000/status` |
+| CORS | In dev, use the Vite app at port **7000** with the `/api` proxy; don’t point the browser straight at `:6000` for the SPA. |
 | Exchange 401 / timeouts | Check Binance keys, testnet flag, firewall, and proxy settings. |
 
 ---

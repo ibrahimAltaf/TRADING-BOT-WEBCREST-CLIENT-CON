@@ -7,14 +7,14 @@ export type ApiError = {
   data?: unknown;
 };
 
-// Production: same-origin `/api` (nginx proxies to uvicorn on 127.0.0.1:8000). Never call :8000 from the browser.
+// Production: same-origin `/api` (nginx proxies to uvicorn, default 127.0.0.1:6000). Never expose raw API port in browser.
 const DEFAULT_API_BASE = "/api";
 
-/** Old builds baked `http://host:8000` — rewrite to same host `/api` so nginx proxy works. */
+/** Old builds baked `http://host:8000` or `:6000` — rewrite to same host `/api` so nginx proxy works. */
 function normalizeApiBase(raw: string): string {
   const s = raw.trim() || DEFAULT_API_BASE;
-  if (!s.includes(":8000")) return s;
-  const withoutPort = s.replace(/:8000\/?$/, "").replace(/\/$/, "");
+  if (!/:8000\/?$/.test(s) && !/:6000\/?$/.test(s)) return s;
+  const withoutPort = s.replace(/:(8000|6000)\/?$/, "").replace(/\/$/, "");
   return `${withoutPort}/api`;
 }
 
@@ -41,7 +41,7 @@ function isLocalApiUrl(url: string): boolean {
 
 /**
  * Resolve axios baseURL:
- * - `/api` — relative: Vite dev proxy → backend :8000 (same origin as UI → no CORS).
+ * - `/api` — relative: Vite dev proxy → backend :6000 (same origin as UI → no CORS).
  * - Full remote URL — production / explicit remote API in dev.
  */
 function resolveApiBase(): string {

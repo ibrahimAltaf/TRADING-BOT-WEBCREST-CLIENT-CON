@@ -19,7 +19,7 @@ Environment=PYTHONPATH=/opt/trading/bot-new-backend
 Environment=PATH=/opt/trading/bot-new-backend/.venv/bin:/usr/bin
 # Prefer one file on VPS: .env.production (also loaded by app from project root)
 EnvironmentFile=-/opt/trading/bot-new-backend/.env.production
-ExecStart=/opt/trading/bot-new-backend/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000
+ExecStart=/opt/trading/bot-new-backend/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 6000
 Restart=on-failure
 RestartSec=5
 

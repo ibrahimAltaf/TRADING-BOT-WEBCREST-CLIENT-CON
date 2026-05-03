@@ -1,4 +1,4 @@
-base="${VITE_API_BASE_URL:-http://localhost:8000}"
+base="${VITE_API_BASE_URL:-http://localhost:6000}"
 echo "BASE_URL=$base"
 
 tests=(

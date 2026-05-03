@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$ROOT"
 export PYTHONPATH="${ROOT}"
-export PORT="${PORT:-8000}"
+export PORT="${PORT:-6000}"
 export WEB_CONCURRENCY="${WEB_CONCURRENCY:-2}"
 exec gunicorn src.main:app \
   -k uvicorn.workers.UvicornWorker \
