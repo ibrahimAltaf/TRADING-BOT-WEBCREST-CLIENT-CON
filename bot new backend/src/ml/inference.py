@@ -14,6 +14,7 @@ from src.ml.exceptions import (
     MlRuntimeError,
 )
 from src.ml.features import FEATURE_COLUMNS_LEGACY, select_features
+from src.ml.model_loader import find_weight_artifact_in_dir, ModelLoadError
 
 _CLASSES = ["SELL", "HOLD", "BUY"]
 
@@ -105,8 +106,17 @@ class LstmInfer:
     def __init__(self, model_dir: str):
         validate_model_package(model_dir)
         tf = _import_tensorflow()
-        self.model_dir = Path(model_dir)
-        self.model = tf.keras.models.load_model(self.model_dir / "model.keras")
+        self.model_dir = Path(model_dir).resolve()
+        weight = find_weight_artifact_in_dir(self.model_dir)
+        if weight is None:
+            checked = [str(self.model_dir / n) for n in ("model.keras", "model.h5")]
+            checked += [str(self.model_dir / n) for n in ("model_keras", "saved_model")]
+            raise ModelLoadError(
+                f"No model.keras / model.h5 / model_keras / saved_model under {self.model_dir}. "
+                f"Checked: {checked}"
+            )
+        self.model = tf.keras.models.load_model(str(weight))
+        self._weight_path = weight
 
         scaler = json.loads((self.model_dir / "scaler.json").read_text())
         self.mean = np.asarray(scaler["mean"], dtype=np.float32)
@@ -141,13 +151,25 @@ class LstmInfer:
 
         probs = self.model.predict(X, verbose=0)[0]  # (3,)
         idx = int(np.argmax(probs))
-        return {
+        out = {
             "down": float(probs[0]),
             "hold": float(probs[1]),
             "up": float(probs[2]),
             "signal": _CLASSES[idx],
             "confidence": float(probs[idx]),
         }
+        try:
+            from src.core.ml_runtime_state import record_inference
+
+            record_inference(
+                action=out["signal"],
+                confidence=out["confidence"],
+                prediction=f"{out['signal']}:{out['confidence']:.4f}",
+                features_shape=X.shape,
+            )
+        except Exception:
+            pass
+        return out
 
 
 def validate_window(window_df: pd.DataFrame, infer: LstmInfer) -> None:

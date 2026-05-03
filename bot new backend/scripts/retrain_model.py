@@ -46,7 +46,7 @@ def main() -> None:
     subprocess.check_call(cmd, cwd=str(ROOT), env={**dict(**__import__("os").environ), "PYTHONPATH": str(ROOT)})
 
     # Promote if metrics file exists (train script can write metrics.json)
-    latest = out_base / "btc_usdt_5m"
+    latest = out_base / "BTCUSDT_5m"
     if latest.exists():
         shutil.copytree(version_dir, latest, dirs_exist_ok=True)
     (out_base / "LATEST_VERSION.txt").write_text(str(version_dir.name))

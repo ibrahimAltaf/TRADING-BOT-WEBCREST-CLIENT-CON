@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Optional
 
+from src.ml.model_loader import find_weight_artifact_in_dir
+
 
 def _repo_root() -> Path:
     # src/ml/model_selector.py -> repo root is parents[2]
@@ -83,18 +85,22 @@ def resolve_model_selection(
             "model_version": model_version or base_dir.name,
             "model_name": "",
             "model_key": model_key,
+            "model_exists": False,
+            "specific_match": False,
+            "artifact_path": None,
         }
 
-    keras_ok = (exact_path / "model.keras").is_file()
+    weight_path = find_weight_artifact_in_dir(exact_path)
+    weights_ok = weight_path is not None
     scaler_ok = (exact_path / "scaler.json").is_file()
     meta_ok = (exact_path / "meta.json").is_file()
-    artifact_exists = keras_ok and scaler_ok and meta_ok
+    artifact_exists = weights_ok and scaler_ok and meta_ok
 
     reason = "ok"
-    if not keras_ok or not scaler_ok or not meta_ok:
+    if not weights_ok or not scaler_ok or not meta_ok:
         missing = []
-        if not keras_ok:
-            missing.append("model.keras")
+        if not weights_ok:
+            missing.append("model_weights")
         if not scaler_ok:
             missing.append("scaler.json")
         if not meta_ok:
@@ -117,4 +123,7 @@ def resolve_model_selection(
         "model_version": model_version or base_dir.name,
         "model_name": exact_path.name,
         "model_key": model_key,
+        "model_exists": weights_ok,
+        "specific_match": exact_match_exists,
+        "artifact_path": str(weight_path) if weight_path else None,
     }

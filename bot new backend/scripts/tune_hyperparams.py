@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--trials", type=int, default=12)
-    ap.add_argument("--dataset", default="models/btc_usdt_5m/dataset.npz")
+    ap.add_argument("--dataset", default="models/BTCUSDT_5m/dataset.npz")
     args = ap.parse_args()
 
     try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Optional
 import os
 
@@ -7,9 +8,17 @@ from fastapi import APIRouter
 from sqlalchemy import or_, desc, text
 
 from src.core.config import get_settings
+from src.core.ml_runtime_state import get_ml_state
 from src.db.session import SessionLocal, engine
 from src.db.models import TradingDecisionLog, EventLog, Trade
 from src.live.gate_stats import distribution_pct
+from src.ml.model_loader import (
+    PROJECT_ROOT,
+    find_weight_artifact_in_dir,
+    resolve_model_artifact,
+)
+from src.ml.model_selector import resolve_model_selection
+from src.ml.model_verify import check_model_artifacts
 
 router = APIRouter(prefix="/status", tags=["status"])
 
@@ -106,12 +115,17 @@ def status_summary() -> Dict[str, Any]:
             db.query(Trade).order_by(Trade.ts.desc()).limit(100).count()
         )
 
-        # model loaded: check ml.inference singleton without importing heavy TF
+        # model loaded: runtime ML state + TensorFlow inferencer cache
         model_loaded = False
         try:
-            import src.ml.inference as mlinf
+            rs = get_ml_state()
+            model_loaded = bool(rs.get("model_loaded")) or int(
+                rs.get("inference_count") or 0
+            ) > 0
+            if not model_loaded:
+                import src.ml.inference as mlinf
 
-            model_loaded = bool(getattr(mlinf, "_cache", {}))
+                model_loaded = bool(getattr(mlinf, "_cache", {}))
         except Exception:
             model_loaded = False
 
@@ -227,6 +241,50 @@ def startup_check() -> Dict[str, Any]:
     }
 
 
+@router.get("/ml-resolution")
+def ml_resolution_proof() -> Dict[str, Any]:
+    """
+    Audit proof: process cwd, project root, resolved `ML_MODEL_DIR`, and per-symbol
+    model directory / weight file / scaler / meta existence.
+    """
+    s = get_settings()
+    version = os.getenv("ML_MODEL_VERSION", "").strip() or None
+    symbols = list(getattr(s, "supported_trading_symbols", (s.trade_symbol,)))
+    tf = s.trade_timeframe
+    per: Dict[str, Any] = {}
+    for sym in symbols:
+        ctx = resolve_model_selection(
+            base_model_dir=s.ml_model_dir,
+            symbol=sym,
+            timeframe=tf,
+            version=version,
+        )
+        d = Path(str(ctx["model_dir"]))
+        art = check_model_artifacts(d) if d.is_dir() else {"all_present": False}
+        flat = resolve_model_artifact(sym, tf)
+        w = find_weight_artifact_in_dir(d) if d.is_dir() else None
+        per[sym] = {
+            "model_key_expected": f"{sym}_{tf}",
+            "resolve_model_selection": {k: v for k, v in ctx.items()},
+            "flat_models_root_resolve": flat,
+            "check_model_artifacts": art,
+            "weight_path_in_model_dir": str(w) if w else None,
+            "scaler_json_exists": (d / "scaler.json").is_file() if d.is_dir() else False,
+            "meta_json_exists": (d / "meta.json").is_file() if d.is_dir() else False,
+        }
+    return {
+        "ok": True,
+        "project_root": str(PROJECT_ROOT),
+        "process_cwd": os.getcwd(),
+        "ml_model_dir_resolved": s.ml_model_dir,
+        "trade_timeframe": tf,
+        "ml_model_version_env": version,
+        "phase1_paper_execution": bool(getattr(s, "phase1_paper_execution", False)),
+        "ml_runtime_state": get_ml_state(),
+        "symbols": per,
+    }
+
+
 @router.get("/model-health")
 def model_health(load_model: bool = True, smoke: bool = False) -> Dict[str, Any]:
     """Runtime ML resolution + optional load check (for audits).
@@ -235,6 +293,7 @@ def model_health(load_model: bool = True, smoke: bool = False) -> Dict[str, Any]
     Set smoke=true to run one inference on recent klines (slower; verifies features + predict).
     """
     s = get_settings()
+    _rs = get_ml_state()
     out: Dict[str, Any] = {
         "ok": True,
         "ml_enabled": bool(getattr(s, "ml_enabled", False)),
@@ -250,6 +309,15 @@ def model_health(load_model: bool = True, smoke: bool = False) -> Dict[str, Any]
         "inference_working": None,
         "model_loaded": False,
         "error": None,
+        "healthy": bool(_rs.get("model_loaded") and int(_rs.get("inference_count") or 0) > 0),
+        "model_artifact_path": _rs.get("model_artifact_path"),
+        "last_prediction": _rs.get("last_prediction"),
+        "last_confidence": _rs.get("last_confidence"),
+        "last_used_at": _rs.get("last_used_at"),
+        "last_error": _rs.get("last_error"),
+        "last_used": _rs.get("last_prediction"),
+        "inference_count": _rs.get("inference_count", 0),
+        "confidence": _rs.get("last_confidence"),
     }
     if not out["ml_enabled"]:
         out["note"] = "ML disabled in settings (ML_ENABLED=false)"
@@ -348,15 +416,22 @@ def model_health(load_model: bool = True, smoke: bool = False) -> Dict[str, Any]
                     + " | set smoke=true for live inference check"
                 ).strip(" |")
         elif ctx.get("runtime_eligible") and not load_model:
-            out["note"] = "model.keras present; load_model=false (skipped inferencer load)"
+            out["note"] = (
+                "runtime-eligible model package present; load_model=false "
+                "(skipped inferencer load)"
+            )
         else:
             out["note"] = (
-                "No runtime-eligible exact model package (see model_resolved.reason)"
+                "No runtime-eligible exact model package (see model_resolved.reason; "
+                "weights: model.keras, model.h5, model_keras/, or saved_model/)"
             )
     except Exception as e:
         out["ok"] = False
         out["error"] = str(e)
-    out["model_loaded"] = bool(out.get("inferencer_loaded"))
+    rs2 = get_ml_state()
+    out["model_loaded"] = bool(out.get("inferencer_loaded")) or bool(rs2.get("model_loaded"))
+    out["inference_count"] = rs2.get("inference_count", out.get("inference_count", 0))
+    out["healthy"] = bool(rs2.get("model_loaded")) and int(rs2.get("inference_count") or 0) > 0
     if out.get("ml_enabled") and out.get("model_resolved"):
         ctx = out["model_resolved"]
         if isinstance(ctx, dict) and not ctx.get("runtime_eligible"):

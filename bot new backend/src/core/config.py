@@ -7,8 +7,25 @@ from dotenv import load_dotenv
 
 from src.core.symbols import parse_supported_trading_symbols
 
-# Load .env from project root
-load_dotenv()
+
+def _project_root() -> Path:
+    """Backend package root (folder that contains `src/` and `models/`)."""
+    return Path(__file__).resolve().parents[2]
+
+
+# Load env from project root (not process cwd).
+# Order: .env.production (VPS / deploy) → .env (local overrides) → .env.local (developer).
+# override=False on production so Docker/systemd-injected vars and pytest's DATABASE_URL are not stomped.
+_root = _project_root()
+_env_prod = _root / ".env.production"
+_env_base = _root / ".env"
+_env_local = _root / ".env.local"
+if _env_prod.is_file():
+    load_dotenv(_env_prod, override=False)
+if _env_base.is_file():
+    load_dotenv(_env_base, override=True)
+if _env_local.is_file():
+    load_dotenv(_env_local, override=True)
 
 
 @dataclass(frozen=True)
@@ -85,6 +102,8 @@ class Settings:
     # Order Execution Mode
     demo_open_only: bool
     demo_fill_mode: bool
+    # When true, BUY uses in-process paper fills (orderId paper-*) for Phase-1 audit proof without exchange fills
+    phase1_paper_execution: bool
     # Engine selection
     fully_adaptive_engine: bool
     # Binance Demo Mode
@@ -128,9 +147,10 @@ def get_settings() -> Settings:
     # Optional / defaulted
     app_env = os.getenv("APP_ENV", "dev").strip()
 
-    # Use relative path from project root
+    # Paths relative to project root (not process cwd)
     data_dir = os.getenv("DATA_DIR", "./data").strip()
-    data_path = Path(data_dir).resolve()
+    _dp = Path(data_dir)
+    data_path = _dp.resolve() if _dp.is_absolute() else (_project_root() / _dp).resolve()
     data_path.mkdir(parents=True, exist_ok=True)
 
     log_level = os.getenv("LOG_LEVEL", "INFO").strip()
@@ -170,8 +190,8 @@ def get_settings() -> Settings:
     ml_min_adx_for_trade = _env_float("ML_MIN_ADX_FOR_TRADE", "0")
     ml_min_atr_pct_for_trade = _env_float("ML_MIN_ATR_PCT_FOR_TRADE", "0")
 
-    # Resolve ML model dir relative to project root
-    ml_model_path = Path(ml_model_dir).resolve()
+    _mp = Path(ml_model_dir)
+    ml_model_path = _mp.resolve() if _mp.is_absolute() else (_project_root() / _mp).resolve()
 
     # ===== Adaptive Trading Strategy Parameters =====
     # General
@@ -214,6 +234,7 @@ def get_settings() -> Settings:
     # Order Execution Mode
     demo_open_only = _env_bool("DEMO_OPEN_ONLY", "false")
     demo_fill_mode = _env_bool("DEMO_FILL_MODE", "true")
+    phase1_paper_execution = _env_bool("PHASE1_PAPER_EXECUTION", "false")
     # Engine selection
     fully_adaptive_engine = _env_bool("FULLY_ADAPTIVE_ENGINE", "false")
 
@@ -286,6 +307,7 @@ def get_settings() -> Settings:
         cooldown_seconds=cooldown_seconds,
         demo_open_only=demo_open_only,
         demo_fill_mode=demo_fill_mode,
+        phase1_paper_execution=phase1_paper_execution,
         fully_adaptive_engine=fully_adaptive_engine,
         binance_demo_api_key=binance_demo_api_key,
         binance_demo_api_secret=binance_demo_api_secret,

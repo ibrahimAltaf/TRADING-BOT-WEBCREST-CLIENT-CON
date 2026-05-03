@@ -19,6 +19,9 @@ RUN pip install --upgrade pip && \
 
 COPY . .
 
+RUN chmod +x scripts/run_api.sh scripts/gunicorn_start.sh || true
+
 EXPOSE 8000
 
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# WORKDIR=/app → project root; config resolves models/ and .env* from here (not host cwd).
+CMD ["./scripts/run_api.sh"]

@@ -11,8 +11,13 @@ venv/
 # OS
 .DS_Store
 
-# Env files
+# Env files (secrets — use .env.example / .env.production as templates only if you commit templates)
 .env
+.env.local
+
+# Local DB / data artifacts
+*.db
+data/*.db
 
 # Node
 node_modules/

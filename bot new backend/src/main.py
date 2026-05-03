@@ -91,6 +91,101 @@ def _maybe_auto_train_background() -> None:
     )
 
 
+def _startup_ml_diagnostics_and_prewarm() -> None:
+    """Print resolved paths and load inferencers so model_loaded + artifact_path are real at runtime."""
+    import os
+    from pathlib import Path
+
+    s = get_settings()
+    if not getattr(s, "ml_enabled", False):
+        return
+
+    try:
+        from src.ml.model_loader import MODELS_ROOT, PROJECT_ROOT, resolve_model_artifact
+        from src.ml.model_selector import resolve_model_selection
+        from src.ml.model_verify import check_model_artifacts
+        from src.ml.inference import get_infer
+        from src.core.ml_runtime_state import set_model_loaded, set_model_error
+
+        print("[DIAGNOSTICS] cwd=", os.getcwd())
+        print("[DIAGNOSTICS] project_root=", PROJECT_ROOT)
+        print("[DIAGNOSTICS] models_root=", MODELS_ROOT)
+
+        symbols = list(getattr(s, "supported_trading_symbols", (s.trade_symbol,)))
+        tf = s.trade_timeframe
+        version = os.getenv("ML_MODEL_VERSION", "").strip() or None
+        loaded_any = False
+        last_err = None
+        smoke_done = False
+        smoke_env = os.getenv("ML_STARTUP_INFERENCE_SMOKE", "true").strip().lower()
+
+        for sym in symbols:
+            flat = resolve_model_artifact(sym, tf)
+            print("[DIAGNOSTICS][MODEL_FLAT]", sym, flat)
+
+            ctx = resolve_model_selection(
+                base_model_dir=s.ml_model_dir,
+                symbol=sym,
+                timeframe=tf,
+                version=version,
+            )
+            print(
+                "[DIAGNOSTICS][MODEL_SEL]",
+                sym,
+                "dir=",
+                ctx.get("model_dir"),
+                "exists=",
+                ctx.get("model_exists"),
+                "artifact=",
+                ctx.get("artifact_path"),
+            )
+
+            if not ctx.get("model_exists"):
+                continue
+            art_check = check_model_artifacts(Path(ctx["model_dir"]))
+            if not art_check.get("all_present"):
+                last_err = f"{sym}: incomplete artifacts {art_check}"
+                print("[STARTUP][ML][WARN]", last_err)
+                continue
+            try:
+                _ = get_infer(str(ctx["model_dir"]))
+                ap = ctx.get("artifact_path") or art_check.get("model_artifact_path")
+                set_model_loaded(sym, tf, str(ap or ctx["model_dir"]))
+                loaded_any = True
+                print(
+                    "[STARTUP][ML] inferencer ready:",
+                    sym,
+                    ap or ctx["model_dir"],
+                )
+                if (
+                    not smoke_done
+                    and smoke_env in ("1", "true", "yes")
+                ):
+                    from src.ml.startup_ml_smoke import run_public_klines_smoke
+
+                    sm = run_public_klines_smoke(
+                        model_dir=str(ctx["model_dir"]),
+                        symbol=sym,
+                        timeframe=tf,
+                        settings=s,
+                    )
+                    smoke_done = True
+                    print("[STARTUP][ML] inference_smoke", sym, sm)
+                    if not sm.get("ok"):
+                        print(
+                            "[STARTUP][ML][WARN] inference_smoke failed (model still loaded):",
+                            sm.get("error"),
+                        )
+            except Exception as exc:
+                last_err = str(exc)
+                print(f"[STARTUP][ML][ERROR] load {sym}: {exc}")
+
+        if not loaded_any:
+            set_model_error(last_err or "no_model_loaded_for_any_symbol")
+    except Exception as exc:
+        print(f"[STARTUP][ML][ERROR] diagnostics/prewarm: {exc}")
+
+
 def _startup_ml_model_check() -> None:
     """Log explicit ML resolution at boot (no silent misconfiguration)."""
     s = get_settings()
@@ -212,9 +307,21 @@ def startup():
         print(f"[STARTUP] settings seed error: {e}")
 
     try:
+        from src.ml.bootstrap_stub_models import bootstrap_if_enabled
+
+        bootstrap_if_enabled()
+    except Exception as e:
+        print(f"[STARTUP] ML stub bootstrap: {e}")
+
+    try:
         _startup_ml_model_check()
     except Exception as e:
         print(f"[STARTUP] ML model check: {e}")
+
+    try:
+        _startup_ml_diagnostics_and_prewarm()
+    except Exception as e:
+        print(f"[STARTUP] ML prewarm: {e}")
 
     try:
         start_scheduler()
@@ -245,7 +352,10 @@ def status():
 @app.get("/status/ml")
 def status_ml():
     """Runtime ML flags (verify process actually has ML_ENABLED=true)."""
+    from src.core.ml_runtime_state import get_ml_state
+
     s = get_settings()
+    rs = get_ml_state()
     return {
         "ok": True,
         "ml_enabled": bool(s.ml_enabled),
@@ -259,6 +369,18 @@ def status_ml():
         "supported_trading_symbols": list(s.supported_trading_symbols),
         "rl_hybrid_enabled": s.rl_hybrid_enabled,
         "rl_ppo_model_path": s.rl_ppo_model_path or None,
+        "runtime_model_loaded": bool(rs.get("model_loaded")),
+        "runtime_inference_count": int(rs.get("inference_count") or 0),
+        "runtime_last_error": rs.get("last_error"),
+        "ml_bootstrap_stub_env": os.getenv("ML_BOOTSTRAP_STUB", "true"),
+        "hint_if_model_missing": (
+            "No weights on disk + no TensorFlow means ML cannot run. "
+            "Install deps (Python 3.11/3.12): pip install -r requirements.txt; "
+            "restart backend with ML_BOOTSTRAP_STUB=true; "
+            "or train: PYTHONPATH=. python scripts/train_multi_coin.py --interval 5m"
+        )
+        if not rs.get("model_loaded") and bool(s.ml_enabled)
+        else None,
     }
 
 

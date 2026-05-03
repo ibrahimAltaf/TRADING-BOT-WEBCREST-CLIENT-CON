@@ -24,6 +24,22 @@ _symbol_last_run: Dict[str, datetime] = {}
 # Last skip reason when a symbol was not executed (runtime / plan).
 _symbol_last_skip: Dict[str, str] = {}
 
+# Traceability counter — incremented on every scheduler cycle that actually runs.
+CYCLE_COUNT: int = 0
+
+
+def run_cycle() -> dict:
+    """
+    Increment the cycle counter and return a traceable snapshot.
+    Called at the start of each live_job execution for audit traceability.
+    """
+    global CYCLE_COUNT
+    CYCLE_COUNT += 1
+    return {
+        "cycle_id": CYCLE_COUNT,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
 
 def _runtime_plan_for_symbol(symbol: str, timeframe: str, settings: Any) -> Dict[str, Any]:
     """Per-symbol ML + execution gate before calling the engine (cheap path check)."""
@@ -51,7 +67,6 @@ def _runtime_plan_for_symbol(symbol: str, timeframe: str, settings: Any) -> Dict
         "reason": ctx.get("reason"),
         "fallback_used": bool(ctx.get("fallback_used")),
     }
-
 
 # Interval in minutes (env SCHEDULER_INTERVAL_MINUTES, default 5). Increase to 10–15
 # if each cycle often takes longer than the interval.
@@ -103,6 +118,8 @@ def live_job():
         )
         return
     try:
+        cycle = run_cycle()
+        print(f"[SCHEDULER] cycle_id={cycle['cycle_id']} ts={cycle['timestamp']}")
         _run_live_job()
     finally:
         _job_lock.release()

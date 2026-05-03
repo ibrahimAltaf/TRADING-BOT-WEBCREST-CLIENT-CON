@@ -615,7 +615,7 @@ class AutoTradeEngine:
                 self._log_event(
                     "WARN",
                     "ml",
-                    "ML_ENABLED but no exact model package for symbol/timeframe — rules-only path",
+                    "ML_ENABLED but model not runtime_eligible for symbol/timeframe — rules-only path",
                     symbol=ml_context.get("symbol"),
                 )
         elif not ml_infer_present:
@@ -1794,6 +1794,9 @@ class AutoTradeEngine:
         risk_pct: Optional[float],
         stop_loss: Optional[float] = None,
     ) -> TradeResult:
+        if getattr(self.settings, "phase1_paper_execution", False):
+            return self._execute_buy_paper(symbol, price, risk_pct)
+
         balance = self._get_usdt_balance()
 
         # Basic safety
@@ -1947,6 +1950,56 @@ class AutoTradeEngine:
             executed_qty=executed_qty,
             cummulative_quote_qty=cum_quote,
             raw_order=order_info,
+        )
+
+    def _execute_buy_paper(
+        self, symbol: str, price: float, risk_pct: Optional[float]
+    ) -> TradeResult:
+        """Simulated market buy for Phase-1 audits (orderId paper-* in ORDERS + DB)."""
+        from src.execution.execution_engine import execute_trade
+
+        balance = self._get_usdt_balance()
+        if balance <= 0:
+            balance = 10_000.0
+        _, spend = self._calculate_position_size(balance, price, risk_pct)
+        if spend <= 0 or price <= 0:
+            spend = 15.0
+        qty = float(spend) / float(price)
+        order = execute_trade(symbol, "BUY", float(price))
+        oid = str(order.get("orderId", ""))
+        self._record_order(
+            symbol=symbol,
+            side="BUY",
+            quantity=qty,
+            requested_price=price,
+            executed_price=price,
+            order_response={"orderId": oid, "paper": True},
+            order_type="MARKET",
+            status="FILLED",
+        )
+        position = self._create_position(
+            symbol=symbol,
+            entry_price=price,
+            quantity=qty,
+        )
+        self._log_event(
+            "INFO",
+            "trade",
+            f"BUY(PAPER) {qty:.8f} {symbol} @ {price:.2f} orderId={oid}",
+            symbol=symbol,
+        )
+        return TradeResult(
+            success=True,
+            executed=True,
+            signal="BUY",
+            reason="Phase-1 paper execution (PHASE1_PAPER_EXECUTION=true)",
+            order_id=oid,
+            price=price,
+            quantity=qty,
+            balance_before=balance,
+            balance_after=balance - spend,
+            position_id=position.id,
+            exchange_status="FILLED",
         )
 
     def _execute_sell(

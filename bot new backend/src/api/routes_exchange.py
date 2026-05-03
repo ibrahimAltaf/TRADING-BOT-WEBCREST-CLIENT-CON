@@ -1151,6 +1151,45 @@ def get_latest_decision(
     }
 
 
+# === AI OBSERVABILITY ===
+
+import src.ml.state as _ml_state
+from src.core.ml_runtime_state import get_ml_state
+from src.execution.execution_engine import ORDERS as _PAPER_ORDERS
+from src.execution.positions import POSITIONS as _PAPER_POSITIONS
+
+
+@router.get("/ai-observability")
+def ai_observability():
+    """
+    Runtime ML observability snapshot (single source: ml_runtime_state).
+    """
+    state = get_ml_state()
+    return {
+        "ok": True,
+        "model_loaded": bool(state.get("model_loaded")),
+        "model_symbol": state.get("model_symbol"),
+        "model_timeframe": state.get("model_timeframe"),
+        "model_artifact_path": state.get("model_artifact_path"),
+        "last_prediction": state.get("last_prediction"),
+        "last_action": state.get("last_action"),
+        "ml_confidence": state.get("last_confidence"),
+        "inference_count": state.get("inference_count", 0),
+        "last_used_at": state.get("last_used_at"),
+        "last_error": state.get("last_error"),
+        "symbols_active": _ml_state.ACTIVE_SYMBOLS,
+    }
+
+
+def _check_ml_cache_loaded() -> bool:
+    try:
+        import src.ml.inference as mlinf
+
+        return bool(getattr(mlinf, "_cache", {}))
+    except Exception:
+        return False
+
+
 # === DEBUG ===
 
 
@@ -1335,5 +1374,11 @@ def exchange_proof(symbol: Optional[str] = None, db: Session = Depends(get_db)):
             "last_event_ts": (
                 last_event.ts.isoformat() if last_event and last_event.ts else None
             ),
+        },
+        "paper_trading": {
+            "orders_count": len(_PAPER_ORDERS),
+            "positions_count": len(_PAPER_POSITIONS),
+            "ml_inference_count": get_ml_state().get("inference_count", 0),
+            "model_loaded": get_ml_state().get("model_loaded"),
         },
     }

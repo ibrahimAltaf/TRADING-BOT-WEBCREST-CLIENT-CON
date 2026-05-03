@@ -44,7 +44,11 @@ def main() -> None:
     ap.add_argument("--lookback", type=int, default=50)
     ap.add_argument("--epochs", type=int, default=32)
     ap.add_argument("--batch-size", type=int, default=32)
-    ap.add_argument("--out-dir", default="models/btc_usdt_5m")
+    ap.add_argument(
+        "--out-dir",
+        default="models/BTCUSDT_5m",
+        help="Must match models/<SYMBOL>_<interval> for multi-coin resolution (ML_MODEL_DIR=models).",
+    )
     ap.add_argument("--label-horizon", type=int, default=DEFAULT_LABEL_HORIZON)
     ap.add_argument("--profit-th", type=float, default=DEFAULT_PROFIT_THRESHOLD)
     args = ap.parse_args()
