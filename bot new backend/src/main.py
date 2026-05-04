@@ -35,7 +35,78 @@ except Exception:
     auth_router = None
     _auth_available = False
 
-app = FastAPI(title="AI Trading System - Phase 1")
+# OpenAPI / Swagger: all routers are included; tags below add descriptions in /docs and /redoc.
+PHASE1_OPENAPI_TAGS = [
+    {
+        "name": "Exchange",
+        "description": (
+            "Trading, portfolio, decisions, proof, ML snapshot. "
+            "**Audit:** `GET /exchange/ai-observability`, `GET /exchange/decisions/latest`, "
+            "`GET /exchange/orders/all`, `GET /exchange/proof`."
+        ),
+    },
+    {
+        "name": "performance",
+        "description": "Historical performance / observability under `/exchange/performance/*`.",
+    },
+    {
+        "name": "status",
+        "description": (
+            "Health and ML readiness. **Audit:** `GET /status/model-health`, "
+            "`GET /status/model-health/symbols`, `GET /status/summary`, `GET /status/startup-check`."
+        ),
+    },
+    {
+        "name": "stats",
+        "description": "Aggregated stats: `GET /stats/performance`, `GET /stats/live-proof`.",
+    },
+    {"name": "Backtest", "description": "Backtest runs and results."},
+    {"name": "logs", "description": "Application logs API."},
+    {"name": "paper", "description": "Paper trading."},
+    {"name": "live", "description": "Live trading helpers."},
+    {"name": "Settings", "description": "App and runtime settings."},
+    {"name": "Demo Trading", "description": "Demo / sandbox flows."},
+    {"name": "decision", "description": "Decision introspection routes."},
+    {"name": "system", "description": "System metadata and controls."},
+    {"name": "strategy", "description": "Strategy configuration (`/strategy/*`)."},
+    {"name": "auth", "description": "Authentication (if enabled)."},
+]
+
+OPENAPI_DESCRIPTION = """### Phase 1 — WebCrest trading API
+
+**Interactive documentation**
+- **Swagger UI:** [`/docs`](/docs)
+- **ReDoc:** [`/redoc`](/redoc)
+- **OpenAPI JSON:** [`/openapi.json`](/openapi.json)
+
+All route modules registered on this app appear in the schema above (no `include_in_schema=False` on public audit routes).
+
+**Typical external validation URLs** (adjust host/port; if nginx mounts API under `/api`, prefix paths or set `FASTAPI_ROOT_PATH` — see below):
+- `GET /exchange/ai-observability` — runtime ML: `model_loaded`, `inference_count`, `ml_confidence`
+- `GET /status/model-health` — optional `load_model`, `smoke` query params
+- `GET /status/model-health/symbols` — per-symbol ML readiness
+- `GET /status/ml` — config flags + `runtime_model_loaded`, `runtime_inference_count`
+- `GET /exchange/decisions/latest?symbol=BTCUSDT`
+- `GET /exchange/orders/all?symbol=BTCUSDT`
+- `GET /exchange/proof?symbol=BTCUSDT`
+
+**Reverse proxy:** If the app is served behind a subpath (e.g. `https://host/api/...`), set env **`FASTAPI_ROOT_PATH=/api`** so “Try it out” in Swagger resolves correctly.
+"""
+
+_fastapi_kw: dict = {
+    "title": "AI Trading System - Phase 1",
+    "description": OPENAPI_DESCRIPTION,
+    "version": os.getenv("APP_VERSION", "1.0").strip(),
+    "openapi_tags": PHASE1_OPENAPI_TAGS,
+    "docs_url": "/docs",
+    "redoc_url": "/redoc",
+    "openapi_url": "/openapi.json",
+}
+_root_path = os.getenv("FASTAPI_ROOT_PATH", "").strip()
+if _root_path:
+    _fastapi_kw["root_path"] = _root_path
+
+app = FastAPI(**_fastapi_kw)
 
 
 def _repo_root() -> Path:
@@ -330,7 +401,7 @@ def startup():
         print(f"[SCHEDULER] not started: {e}")
 
 
-@app.get("/status")
+@app.get("/status", tags=["status"])
 def status():
     s = get_settings()
     return {
@@ -350,7 +421,7 @@ def status():
     }
 
 
-@app.get("/status/ml")
+@app.get("/status/ml", tags=["status"])
 def status_ml():
     """Runtime ML flags (verify process actually has ML_ENABLED=true)."""
     from src.core.ml_runtime_state import get_ml_state
@@ -385,7 +456,7 @@ def status_ml():
     }
 
 
-@app.get("/status/ml-runtime")
+@app.get("/status/ml-runtime", tags=["status"])
 def status_ml_runtime():
     """Per-symbol ML readiness: exact path, artifacts, inferencer cache (no heavy smoke)."""
     import os
@@ -434,13 +505,13 @@ def status_ml_runtime():
     }
 
 
-@app.get("/status-summary")
+@app.get("/status-summary", tags=["status"])
 def status_summary_alias():
     """Same payload as GET /status/summary — for audits/tools that expect kebab-case."""
     return status_summary_handler()
 
 
-@app.get("/health/db")
+@app.get("/health/db", tags=["status"])
 def db_health():
     try:
         with engine.connect() as c:
